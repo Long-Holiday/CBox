@@ -91,6 +91,28 @@ CREATE INDEX IF NOT EXISTS idx_events_object ON events(object_type, object_id);
 `
 
 func (db *DB) Migrate() error {
+	// Detect legacy schema
+	var hasDesiredState int
+	_ = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('containers') WHERE name = 'desired_state'").Scan(&hasDesiredState)
+	var hasContainers int
+	_ = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='containers'").Scan(&hasContainers)
+
+	if hasContainers > 0 && hasDesiredState == 0 {
+		// Old python schema exists without desired_state: drop old tables to migrate
+		dropOld := `
+		DROP TABLE IF EXISTS container_mounts;
+		DROP TABLE IF EXISTS runtime_cache;
+		DROP TABLE IF EXISTS containers;
+		DROP TABLE IF EXISTS image_tags;
+		DROP TABLE IF EXISTS images;
+		DROP TABLE IF EXISTS volumes;
+		DROP TABLE IF EXISTS runtimes;
+		DROP TABLE IF EXISTS contexts;
+		DROP TABLE IF EXISTS events;
+		`
+		_, _ = db.Exec(dropOld)
+	}
+
 	_, err := db.Exec(schema)
 	return err
 }
