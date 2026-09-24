@@ -11,3 +11,5 @@ build/
 .venv/
 runs/
 example-vol/
+bin/
+*.db
