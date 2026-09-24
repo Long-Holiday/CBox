@@ -1,0 +1,47 @@
+version: "1"
+
+services:
+  full:
+    image: wwtp:mmseg
+
+    gpu:
+      preference:
+        - L4
+        - T4
+
+    volumes:
+      - source: /data/WWTP
+        target: /data
+        mode: ro
+
+      - source: ./runs/full
+        target: /output
+        mode: output
+
+    command:
+      - python
+      - tools/train.py
+      - configs/full.py
+
+    restart: unless-stopped
+
+  no_frequency:
+    image: wwtp:mmseg
+
+    gpu:
+      preference:
+        - T4
+
+    volumes:
+      - source: /data/WWTP
+        target: /data
+        mode: ro
+
+      - source: ./runs/no_frequency
+        target: /output
+        mode: output
+
+    command:
+      - python
+      - tools/train.py
+      - configs/no_frequency.py

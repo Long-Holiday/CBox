@@ -1,0 +1,47 @@
+version: "1"
+
+services:
+  full:
+    image: wwtp:mmseg
+
+    gpu:
+      preference:
+        - L4
+        - T4
+
+    volumes:
+      - source: ./example-vol
+        target: /data
+        mode: ro
+
+      - source: ./runs/full
+        target: /output
+        mode: output
+
+    command:
+      - python3
+      - -c
+      - "import time; print('Training full model...'); time.sleep(120)"
+
+    restart: unless-stopped
+
+  no_frequency:
+    image: wwtp:mmseg
+
+    gpu:
+      preference:
+        - T4
+
+    volumes:
+      - source: ./example-vol
+        target: /data
+        mode: ro
+
+      - source: ./runs/no_frequency
+        target: /output
+        mode: output
+
+    command:
+      - python3
+      - -c
+      - "import time; print('Training ablation model...'); time.sleep(120)"

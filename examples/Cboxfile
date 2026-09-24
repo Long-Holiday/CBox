@@ -1,0 +1,17 @@
+FROM colab/python:3
+
+APT git
+APT rsync
+APT libgl1
+
+PIP torch
+PIP torchvision
+PIP mmengine
+PIP mmcv
+PIP mmsegmentation
+
+ENV PYTHONPATH=/workspace
+
+WORKDIR /workspace
+
+CMD ["bash"]
