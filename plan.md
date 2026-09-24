@@ -1,30 +1,93 @@
-# CBox：Docker-like Colab GPU Runtime Engine
+# CBox：Go 版本开发设计
 
-## 1. 项目目标
+## 1. 项目定位
 
-项目暂定名称：
+CBox 是一个：
+
+> Docker-like Ephemeral GPU Runtime Engine
+
+第一阶段 Provider：
 
 ```text
-CBox
+Google Colab
 ```
 
-定位：
+未来：
 
-> 将 Google Colab Runtime 抽象为类似 Docker Container 的临时远程 GPU 执行环境。
+```text
+Colab
+RunPod
+GCP
+SSH Server
+Local GPU
+```
 
-目标用户不需要理解：
+用户体验：
+
+```bash
+cbox build -t mmseg:latest .
+
+cbox run -d \
+  --name full \
+  --gpu L4,T4 \
+  -v /data/WWTP:/data:ro \
+  -v ./runs/full:/output:output \
+  mmseg:latest \
+  python tools/train.py configs/full.py
+
+cbox ps
+cbox logs -f full
+cbox exec -it full bash
+cbox stats full
+
+cbox stop full
+cbox start full
+cbox rm full
+```
+
+核心目标：
+
+```text
+Docker-like UX
++
+Remote GPU
++
+Disposable Runtime
++
+Persistent State
++
+Automatic Recovery
+```
+
+---
+
+# 2. 核心设计原则
+
+## 2.1 不把 Colab 暴露给用户
+
+用户不应该直接处理：
 
 ```text
 colab new
 colab ssh
+colab status
 ProxyCommand
+sessions.json
 rsync
 tmux
-runtime session
-checkpoint sync
 ```
 
-而只需要理解：
+这些全部属于：
+
+```text
+ColabProvider
+```
+
+内部实现。
+
+---
+
+## 2.2 用户模型只有五个主要概念
 
 ```text
 Image
@@ -34,477 +97,1063 @@ Context
 Compose
 ```
 
-最终用户体验：
-
-```bash
-cbox build -t mmseg:latest .
-
-cbox run -d \
-    --name experiment-01 \
-    --gpu L4 \
-    -v /data/Potsdam:/data:ro \
-    -v ./runs/exp01:/output:output \
-    mmseg:latest \
-    python tools/train.py configs/model.py
-
-cbox ps
-
-cbox logs -f experiment-01
-
-cbox exec -it experiment-01 bash
-
-cbox cp experiment-01:/output/best.pth ./
-
-cbox stop experiment-01
-
-cbox rm experiment-01
-```
-
----
-
-# 2. 核心原则
-
-CBox 在交互模型上模仿 Docker，但绝不能假装 Colab 真的是 Docker。
-
-三个最重要的语义差异：
-
-| Docker                          | CBox                                          |
-| ------------------------------- | --------------------------------------------- |
-| Image 是 filesystem snapshot     | Image 是声明式环境 Blueprint                        |
-| Volume 可以是真正 bind mount         | Volume 是服务器与 Colab 之间的同步副本                    |
-| stop 后 container filesystem 仍存在 | Colab runtime 释放后 filesystem 消失               |
-| start 恢复原 container             | CBox start 重建 runtime 并恢复状态                   |
-| Container 与本机 kernel 隔离         | CBox Container 实际对应远程 Colab Runtime + Process |
-
-因此 CBox 的设计原则是：
+内部才存在：
 
 ```text
-Docker-like UX
-+
-Colab-native semantics
+Runtime
+Worker
+Provider
+Session
+Account
+Scheduler
 ```
 
 ---
 
-# 3. 总体系统架构
-
-完整结构：
+## 2.3 Server 是永久状态源
 
 ```text
-                       User
-                        │
-                        ▼
-                 ┌─────────────┐
-                 │  cbox CLI   │
-                 └──────┬──────┘
-                        │
-                   Unix Socket
-                        │
-                        ▼
-                ┌───────────────┐
-                │     cboxd     │
-                │    Engine     │
-                └──────┬────────┘
-                       │
-        ┌──────────────┼──────────────┐
-        │              │              │
-        ▼              ▼              ▼
- Container        Image Manager   Volume Manager
- Manager
-        │
-        ▼
- Scheduler
-        │
-        ▼
- Runtime Manager
-        │
-        ▼
- Provider Interface
-        │
-        ├─────────────┐
-        ▼             ▼
- ColabProvider    Future Providers
-        │         RunPod / GCP / Local
-        ▼
- google-colab-cli
-        │
-        ▼
- Colab Runtime
-        │
-        ▼
- SSH over WebSocket
-        │
-        ▼
- Remote Worker Agent
-        │
-        ├── command
-        ├── tmux
-        ├── logs
-        ├── GPU metrics
-        └── filesystem
+Remote Linux Server
+       │
+       ├── CBox DB
+       ├── Image manifests
+       ├── Volume metadata
+       ├── Dataset
+       ├── Source code
+       ├── Checkpoint
+       └── Logs
+
+Colab VM
+       │
+       └── Disposable Cache
+```
+
+原则：
+
+> Colab 随时可以全部消失，而不导致实验永久状态丢失。
+
+---
+
+# 3. Go 技术栈
+
+推荐：
+
+```text
+Go >= 1.24
+```
+
+核心依赖尽量少。
+
+CLI：
+
+```text
+github.com/spf13/cobra
+```
+
+配置：
+
+```text
+gopkg.in/yaml.v3
+```
+
+SQLite：
+
+```text
+database/sql
+modernc.org/sqlite
+```
+
+UUID：
+
+```text
+github.com/google/uuid
+```
+
+系统日志：
+
+```text
+log/slog
+```
+
+HTTP：
+
+```text
+net/http
+```
+
+Unix Socket：
+
+```text
+net
+```
+
+进程：
+
+```text
+os/exec
+```
+
+并发：
+
+```text
+context
+sync
+sync/atomic
+channels
+```
+
+测试：
+
+```text
+testing
+httptest
+```
+
+尽量不要引入：
+
+```text
+Gin
+Echo
+Fiber
+GORM
+Redis
+Celery-like queue
 ```
 
 ---
 
-# 4. Client / Daemon 架构
+# 4. 二进制设计
 
-采用：
+生成两个核心程序：
 
 ```text
 cbox
-+
 cboxd
-```
-
-类似：
-
-```text
-docker
-+
-dockerd
 ```
 
 ## cbox
 
-负责：
+CLI Client。
+
+职责：
 
 ```text
-命令行解析
-请求 daemon
-格式化输出
-attach stdin/stdout
-```
-
-不负责：
-
-```text
-Colab 生命周期
-后台 checkpoint
-健康检查
-恢复
-定时同步
+CLI parsing
+调用 cboxd API
+输出格式化
+interactive attach
+stdin/stdout forwarding
 ```
 
 ---
 
 ## cboxd
 
-长期后台运行。
+长期运行的 Engine。
 
-负责：
+职责：
 
 ```text
-Container 生命周期
-Runtime 生命周期
-Colab Provider
-SSH
-rsync
-Image materialization
+Container lifecycle
+Runtime lifecycle
+Scheduler
 Volume sync
-日志
-Runtime keepalive
-状态监控
-自动恢复
-多账户管理
+Image materialization
+Health monitor
+Recovery
+Logs
+Metrics
+Provider management
 ```
 
-Linux：
+---
 
-```bash
-systemctl --user enable --now cboxd
-```
-
-通信：
+# 5. 总体架构
 
 ```text
-Unix Domain Socket
+                         User
+                           │
+                           ▼
+                    ┌────────────┐
+                    │    cbox    │
+                    │ Cobra CLI  │
+                    └─────┬──────┘
+                          │
+                   Unix HTTP API
+                          │
+                          ▼
+                  ┌──────────────┐
+                  │    cboxd     │
+                  │    Engine    │
+                  └──────┬───────┘
+                         │
+       ┌─────────────────┼─────────────────┐
+       │                 │                 │
+       ▼                 ▼                 ▼
+ ContainerService   ImageService     VolumeService
+       │
+       ▼
+ Scheduler
+       │
+       ▼
+ RuntimeService
+       │
+       ▼
+ Provider Interface
+       │
+       ▼
+ ColabProvider
+       │
+       ▼
+ google-colab-cli
+       │
+       ▼
+ Colab Runtime
+       │
+       ▼
+ SSH Proxy
+       │
+       ▼
+ Remote process
 ```
 
-例如：
+---
 
-```text
-$XDG_RUNTIME_DIR/cbox/cbox.sock
-```
+# 6. Go Repository 结构
 
 推荐：
-
-```text
-HTTP + JSON over Unix Socket
-```
-
-第一版使用：
-
-```text
-FastAPI
-+
-Uvicorn
-```
-
-即可。
-
----
-
-# 5. 软件分层
-
-内部建议采用：
-
-```text
-CLI
- │
- ▼
-API Client
- │
- ▼
-Engine API
- │
- ▼
-Service Layer
- │
- ├── ContainerService
- ├── ImageService
- ├── VolumeService
- ├── RuntimeService
- └── ContextService
- │
- ▼
-Domain Layer
- │
- ├── Container
- ├── Image
- ├── Volume
- ├── Runtime
- └── Provider
- │
- ▼
-Infrastructure
- │
- ├── SQLite
- ├── Colab CLI
- ├── SSH
- ├── rsync
- └── filesystem
-```
-
-这样以后替换：
-
-```text
-ColabProvider
-```
-
-不会影响：
-
-```text
-ContainerService
-```
-
----
-
-# 6. 技术栈
-
-推荐：
-
-| 组件             | 技术               |
-| -------------- | ---------------- |
-| Language       | Python 3         |
-| CLI            | Typer            |
-| Models         | Pydantic         |
-| Async          | asyncio          |
-| Daemon API     | FastAPI          |
-| Unix Socket    | Uvicorn          |
-| Database       | SQLite           |
-| ORM            | SQLAlchemy 2     |
-| Migration      | Alembic          |
-| Serialization  | JSON             |
-| Config         | YAML             |
-| SSH            | OpenSSH          |
-| Sync           | rsync            |
-| Worker process | tmux             |
-| Colab          | google-colab-cli |
-| Logging        | structlog        |
-| Tests          | pytest           |
-| Packaging      | uv / hatchling   |
-
-不建议第一版引入：
-
-```text
-Redis
-Celery
-RabbitMQ
-Kubernetes
-Docker-in-Docker
-```
-
----
-
-# 7. Repository 结构
 
 ```text
 cbox/
+├── cmd/
+│   ├── cbox/
+│   │   └── main.go
+│   │
+│   └── cboxd/
+│       └── main.go
 │
-├── pyproject.toml
-├── README.md
-├── LICENSE
+├── internal/
 │
-├── src/
-│   └── cbox/
+│   ├── api/
+│   │   ├── server.go
+│   │   ├── middleware.go
+│   │   ├── containers.go
+│   │   ├── images.go
+│   │   ├── volumes.go
+│   │   ├── contexts.go
+│   │   └── system.go
 │
-│       ├── cli/
-│       │   ├── main.py
-│       │   ├── container.py
-│       │   ├── image.py
-│       │   ├── volume.py
-│       │   ├── context.py
-│       │   └── compose.py
-│       │
-│       ├── client/
-│       │   └── api.py
-│       │
-│       ├── daemon/
-│       │   ├── main.py
-│       │   ├── app.py
-│       │   └── lifespan.py
-│       │
-│       ├── api/
-│       │   ├── containers.py
-│       │   ├── images.py
-│       │   ├── volumes.py
-│       │   ├── contexts.py
-│       │   └── system.py
-│       │
-│       ├── domain/
-│       │   ├── container.py
-│       │   ├── image.py
-│       │   ├── volume.py
-│       │   ├── runtime.py
-│       │   ├── context.py
-│       │   └── enums.py
-│       │
-│       ├── services/
-│       │   ├── container_service.py
-│       │   ├── image_service.py
-│       │   ├── volume_service.py
-│       │   ├── runtime_service.py
-│       │   ├── scheduler.py
-│       │   └── recovery_service.py
-│       │
-│       ├── providers/
-│       │   ├── base.py
-│       │   └── colab/
-│       │       ├── provider.py
-│       │       ├── cli.py
-│       │       ├── auth.py
-│       │       └── session.py
-│       │
-│       ├── transport/
-│       │   ├── ssh.py
-│       │   ├── rsync.py
-│       │   └── proxy.py
-│       │
-│       ├── worker/
-│       │   ├── bootstrap.py
-│       │   ├── executor.py
-│       │   ├── metrics.py
-│       │   └── health.py
-│       │
-│       ├── storage/
-│       │   ├── database.py
-│       │   ├── models.py
-│       │   └── repositories.py
-│       │
-│       ├── compose/
-│       │   ├── parser.py
-│       │   └── service.py
-│       │
-│       └── utils/
-│           ├── shell.py
-│           ├── hash.py
-│           ├── paths.py
-│           └── errors.py
+│   ├── client/
+│   │   ├── client.go
+│   │   └── transport.go
+│
+│   ├── container/
+│   │   ├── model.go
+│   │   ├── service.go
+│   │   ├── state.go
+│   │   ├── runner.go
+│   │   └── recovery.go
+│
+│   ├── image/
+│   │   ├── model.go
+│   │   ├── parser.go
+│   │   ├── builder.go
+│   │   └── materializer.go
+│
+│   ├── volume/
+│   │   ├── model.go
+│   │   ├── service.go
+│   │   ├── manifest.go
+│   │   └── sync.go
+│
+│   ├── runtime/
+│   │   ├── model.go
+│   │   ├── service.go
+│   │   ├── monitor.go
+│   │   └── pool.go
+│
+│   ├── scheduler/
+│   │   ├── scheduler.go
+│   │   └── scoring.go
+│
+│   ├── provider/
+│   │   ├── provider.go
+│   │   └── colab/
+│   │       ├── provider.go
+│   │       ├── cli.go
+│   │       ├── parser.go
+│   │       └── profile.go
+│
+│   ├── transport/
+│   │   ├── transport.go
+│   │   ├── ssh.go
+│   │   ├── rsync.go
+│   │   └── tar.go
+│
+│   ├── worker/
+│   │   ├── bootstrap.go
+│   │   ├── executor.go
+│   │   ├── health.go
+│   │   └── metrics.go
+│
+│   ├── store/
+│   │   ├── db.go
+│   │   ├── migrations.go
+│   │   ├── container_repo.go
+│   │   ├── image_repo.go
+│   │   ├── volume_repo.go
+│   │   ├── runtime_repo.go
+│   │   └── event_repo.go
+│
+│   ├── context/
+│   │   ├── model.go
+│   │   └── service.go
+│
+│   ├── compose/
+│   │   ├── model.go
+│   │   ├── parser.go
+│   │   └── service.go
+│
+│   ├── config/
+│   │   ├── config.go
+│   │   └── paths.go
+│
+│   └── errors/
+│       └── errors.go
+│
+├── pkg/
+│   └── api/
+│       └── types.go
+│
+├── scripts/
+│   └── install.sh
 │
 ├── worker/
 │   ├── bootstrap.sh
 │   ├── entrypoint.sh
-│   ├── exec.sh
 │   └── health.sh
 │
 ├── examples/
 │   ├── Cboxfile
 │   └── cbox-compose.yaml
 │
-└── tests/
-    ├── unit/
-    ├── integration/
-    └── e2e/
+├── migrations/
+├── go.mod
+├── go.sum
+├── Makefile
+└── README.md
 ```
 
 ---
 
-# 8. 用户层核心对象
+# 7. Domain Model
 
-CBox 用户只需要主要理解四个对象：
-
-```text
-Image
-Container
-Volume
-Context
-```
-
-Compose 是组合层。
-
-内部的：
+核心 domain 不允许依赖：
 
 ```text
-Runtime
-Worker
-Session
-Account
-Provider
-Process
+Colab
+SSH
+SQLite
+Cobra
 ```
 
-不作为主要用户对象。
+这是关键。
 
 ---
 
-# 9. Image 设计
+# 8. Container
 
-## 9.1 定义
+```go
+type Container struct {
+    ID       string
+    Name     string
+    ImageID  string
 
-CBox Image 是：
+    Command  []string
+    Env      map[string]string
+    WorkDir  string
 
-```text
-Environment Blueprint
+    Resource ResourceSpec
+    Mounts   []Mount
+
+    State    ContainerState
+
+    RuntimeID string
+
+    RestartPolicy RestartPolicy
+
+    ResumeCommand []string
+
+    ExitCode *int
+
+    CreatedAt time.Time
+    StartedAt *time.Time
+    FinishedAt *time.Time
+}
 ```
-
-包含：
-
-```text
-基础环境要求
-APT 包
-Python 包
-环境变量
-初始化脚本
-工作目录
-默认命令
-```
-
-它不是 filesystem image。
 
 ---
 
-# 10. Cboxfile
+# 9. ContainerState
 
-设计类似 Dockerfile。
+```go
+type ContainerState string
+
+const (
+    ContainerCreated      ContainerState = "created"
+    ContainerProvisioning ContainerState = "provisioning"
+    ContainerPreparing    ContainerState = "preparing"
+    ContainerStarting     ContainerState = "starting"
+    ContainerRunning      ContainerState = "running"
+
+    ContainerExited       ContainerState = "exited"
+
+    ContainerStopping     ContainerState = "stopping"
+    ContainerStopped      ContainerState = "stopped"
+
+    ContainerInterrupted  ContainerState = "interrupted"
+    ContainerRecovering   ContainerState = "recovering"
+
+    ContainerFailed       ContainerState = "failed"
+)
+```
+
+所有状态转换必须统一走：
+
+```go
+Transition(...)
+```
+
+不要：
+
+```go
+container.State = ...
+```
+
+散落在代码中。
+
+---
+
+# 10. State Machine
+
+允许：
+
+```text
+CREATED
+  ↓
+PROVISIONING
+  ↓
+PREPARING
+  ↓
+STARTING
+  ↓
+RUNNING
+```
+
+正常完成：
+
+```text
+RUNNING
+ ↓
+EXITED
+```
+
+主动停止：
+
+```text
+RUNNING
+ ↓
+STOPPING
+ ↓
+STOPPED
+```
+
+异常：
+
+```text
+RUNNING
+ ↓
+INTERRUPTED
+ ↓
+RECOVERING
+ ↓
+PROVISIONING
+```
+
+---
+
+# 11. Runtime
+
+```go
+type Runtime struct {
+    ID string
+
+    Provider string
+    Session  string
+    Profile  string
+
+    RequestedGPU string
+    ActualGPU    string
+
+    State RuntimeState
+
+    CreatedAt time.Time
+    LastSeen  time.Time
+
+    Cache RuntimeCache
+}
+```
+
+---
+
+# 12. RuntimeState
+
+```go
+type RuntimeState string
+
+const (
+    RuntimeProvisioning RuntimeState = "provisioning"
+    RuntimeConnecting   RuntimeState = "connecting"
+    RuntimeReady        RuntimeState = "ready"
+    RuntimeBusy         RuntimeState = "busy"
+    RuntimeIdle         RuntimeState = "idle"
+    RuntimeStopping     RuntimeState = "stopping"
+    RuntimeStopped      RuntimeState = "stopped"
+    RuntimeLost         RuntimeState = "lost"
+)
+```
+
+---
+
+# 13. ResourceSpec
+
+```go
+type ResourceSpec struct {
+    GPUPreference []string
+
+    HighMemory bool
+
+    Profile string
+}
+```
 
 例如：
 
-```dockerfile
-FROM colab/python:3
+```go
+ResourceSpec{
+    GPUPreference: []string{
+        "L4",
+        "T4",
+    },
+}
+```
 
-APT git
-APT rsync
-APT libgl1
+表示：
+
+```text
+优先 L4
+L4 不可用则 T4
+```
+
+---
+
+# 14. Provider Interface
+
+这是整个架构最重要的接口。
+
+```go
+type Provider interface {
+    Name() string
+
+    CreateRuntime(
+        ctx context.Context,
+        req RuntimeRequest,
+    ) (*RuntimeHandle, error)
+
+    GetRuntime(
+        ctx context.Context,
+        runtime *Runtime,
+    ) (*RuntimeStatus, error)
+
+    StopRuntime(
+        ctx context.Context,
+        runtime *Runtime,
+    ) error
+
+    ListRuntimes(
+        ctx context.Context,
+    ) ([]RuntimeStatus, error)
+
+    OpenTransport(
+        ctx context.Context,
+        runtime *Runtime,
+    ) (transport.Transport, error)
+}
+```
+
+`ContainerService` 永远不允许直接：
+
+```go
+exec.Command("colab", ...)
+```
+
+必须：
+
+```text
+ContainerService
+→ RuntimeService
+→ Provider
+```
+
+---
+
+# 15. ColabProvider
+
+```go
+type ColabProvider struct {
+    binary string
+
+    profiles ProfileStore
+
+    logger *slog.Logger
+}
+```
+
+实际调用：
+
+```text
+google-colab-cli
+```
+
+例如：
+
+```go
+func (p *ColabProvider) CreateRuntime(
+    ctx context.Context,
+    req RuntimeRequest,
+) (*RuntimeHandle, error) {
+
+    args := []string{
+        "new",
+        "-s", req.Session,
+    }
+
+    if req.GPU != "" {
+        args = append(
+            args,
+            "--gpu",
+            req.GPU,
+        )
+    }
+
+    if req.HighMemory {
+        args = append(
+            args,
+            "--high-mem",
+        )
+    }
+
+    cmd := exec.CommandContext(
+        ctx,
+        p.binary,
+        args...,
+    )
+
+    ...
+}
+```
+
+---
+
+# 16. 禁止 import Colab CLI 私有代码
+
+不要：
+
+```go
+// 不存在直接 Go import，但同理不要依赖 Python private module
+```
+
+也不要直接请求：
+
+```text
+Colab backend private endpoints
+```
+
+CBox 与 Colab 的唯一稳定边界：
+
+```text
+google-colab-cli executable
+```
+
+---
+
+# 17. CLI Wrapper
+
+单独写：
+
+```go
+type CLI struct {
+    Binary string
+
+    Profile Profile
+}
+```
+
+方法：
+
+```go
+func (c *CLI) New(...)
+func (c *CLI) Status(...)
+func (c *CLI) Sessions(...)
+func (c *CLI) Stop(...)
+```
+
+Provider 不直接大量拼命令。
+
+---
+
+# 18. Account Profile
+
+```go
+type Profile struct {
+    Name string
+
+    HomeDir    string
+    ConfigFile string
+    OAuthFile  string
+}
+```
+
+运行：
+
+```go
+cmd.Env = append(
+    os.Environ(),
+    "HOME="+profile.HomeDir,
+)
+```
+
+通过 profile 隔离：
+
+```text
+Account A
+Account B
+```
+
+---
+
+# 19. Transport Interface
+
+```go
+type Transport interface {
+    Exec(
+        ctx context.Context,
+        command []string,
+        opts ExecOptions,
+    ) (*ExecResult, error)
+
+    CopyTo(
+        ctx context.Context,
+        src string,
+        dst string,
+    ) error
+
+    CopyFrom(
+        ctx context.Context,
+        src string,
+        dst string,
+    ) error
+
+    SyncTo(
+        ctx context.Context,
+        src string,
+        dst string,
+        opts SyncOptions,
+    ) error
+
+    SyncFrom(
+        ctx context.Context,
+        src string,
+        dst string,
+        opts SyncOptions,
+    ) error
+}
+```
+
+---
+
+# 20. SSHTransport
+
+MVP 不要自己实现 SSH。
+
+直接调用：
+
+```text
+OpenSSH
+```
+
+理由：
+
+```text
+PTY
+terminal resize
+ProxyCommand
+ControlMaster
+scp/rsync compatibility
+signal handling
+```
+
+OpenSSH 已经解决。
+
+---
+
+# 21. SSH Config
+
+Engine 动态生成：
+
+```text
+~/.local/share/cbox/ssh/
+```
+
+例如：
+
+```text
+Host cbox-ca84bd
+    User root
+    IdentityFile ~/.local/share/cbox/keys/worker
+
+    ProxyCommand /usr/bin/colab \
+        --config PROFILE_CONFIG \
+        ssh \
+        --proxy-mode \
+        -s cbox-ca84bd \
+        -i ~/.local/share/cbox/keys/worker
+
+    ControlMaster auto
+    ControlPersist 600
+    ControlPath ~/.cache/cbox/ssh/%C
+
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+```
+
+---
+
+# 22. Exec 实现
+
+```go
+func (t *SSHTransport) Exec(
+    ctx context.Context,
+    command []string,
+) error {
+
+    args := []string{
+        "-F",
+        t.configFile,
+        t.host,
+        "--",
+    }
+
+    args = append(args, command...)
+
+    cmd := exec.CommandContext(
+        ctx,
+        "ssh",
+        args...,
+    )
+
+    return cmd.Run()
+}
+```
+
+---
+
+# 23. Interactive Exec
+
+```bash
+cbox exec -it full bash
+```
+
+这里 CLI 不应该经过普通 JSON stdout。
+
+流程：
+
+```text
+cbox
+ ↓
+向 daemon 请求 container transport info
+ ↓
+CLI 自己 exec ssh -tt
+ ↓
+直接接管当前 terminal
+```
+
+原因：
+
+PTY 不适合简单 HTTP JSON 转发。
+
+---
+
+# 24. cbox CLI 与 cboxd 通信
+
+使用：
+
+```text
+HTTP/1.1
+over
+Unix Domain Socket
+```
+
+Socket：
+
+```text
+$XDG_RUNTIME_DIR/cbox/cbox.sock
+```
+
+Go：
+
+```go
+listener, err := net.Listen(
+    "unix",
+    socketPath,
+)
+```
+
+---
+
+# 25. Daemon HTTP Server
+
+直接：
+
+```go
+mux := http.NewServeMux()
+```
+
+Go 新版 ServeMux 足够。
+
+例如：
+
+```go
+mux.HandleFunc(
+    "GET /v1/containers",
+    handler.ListContainers,
+)
+
+mux.HandleFunc(
+    "POST /v1/containers",
+    handler.CreateContainer,
+)
+
+mux.HandleFunc(
+    "POST /v1/containers/{id}/start",
+    handler.StartContainer,
+)
+```
+
+不需要 Gin。
+
+---
+
+# 26. Client
+
+```go
+type Client struct {
+    HTTP *http.Client
+}
+```
+
+自定义 transport：
+
+```go
+DialContext:
+    net.Dial("unix", socket)
+```
+
+CLI：
+
+```text
+Cobra
+↓
+Client
+↓
+Unix socket
+↓
+cboxd
+```
+
+---
+
+# 27. API 设计
+
+## Container
+
+```text
+POST   /v1/containers
+GET    /v1/containers
+GET    /v1/containers/{id}
+
+POST   /v1/containers/{id}/start
+POST   /v1/containers/{id}/stop
+POST   /v1/containers/{id}/restart
+
+DELETE /v1/containers/{id}
+
+POST   /v1/containers/{id}/exec
+
+GET    /v1/containers/{id}/logs
+GET    /v1/containers/{id}/stats
+```
+
+---
+
+# 28. Image API
+
+```text
+POST   /v1/images/build
+GET    /v1/images
+GET    /v1/images/{id}
+DELETE /v1/images/{id}
+```
+
+---
+
+# 29. Volume API
+
+```text
+POST   /v1/volumes
+GET    /v1/volumes
+GET    /v1/volumes/{name}
+DELETE /v1/volumes/{name}
+```
+
+---
+
+# 30. Image
+
+```go
+type Image struct {
+    ID string
+
+    Tags []string
+
+    Manifest ImageManifest
+
+    CreatedAt time.Time
+}
+```
+
+---
+
+# 31. Cboxfile
+
+建议第一版不要真的复刻 Dockerfile parser。
+
+采用简单 DSL：
+
+```dockerfile
+FROM colab/python
+
+APT git rsync libgl1
 
 PIP torch
 PIP torchvision
@@ -523,1633 +1172,554 @@ RUN pip install -r /tmp/requirements.txt
 CMD ["bash"]
 ```
 
-第一版只需要实现：
-
-```text
-FROM
-APT
-PIP
-ENV
-WORKDIR
-COPY
-RUN
-CMD
-```
-
-不要一开始实现完整 Dockerfile syntax。
-
 ---
 
-# 11. `cbox build`
+# 32. Parser
 
-执行：
+定义：
 
-```bash
-cbox build -t mmseg:latest .
-```
-
-内部不是启动 Runtime，而是：
-
-```text
-parse Cboxfile
-       ↓
-resolve dependencies
-       ↓
-normalize manifest
-       ↓
-calculate content hash
-       ↓
-create bootstrap plan
-       ↓
-save image metadata
-```
-
-例如：
-
-```text
-~/.local/share/cbox/images/
-└── sha256-abc123/
-    ├── manifest.json
-    ├── bootstrap.sh
-    ├── requirements.txt
-    ├── context/
-    └── metadata.json
-```
-
-Image ID：
-
-```text
-SHA256(
- Cboxfile
- + referenced files
- + normalized settings
-)
-```
-
-这样环境不变时：
-
-```text
-Image ID 不变
-```
-
----
-
-# 12. Image Manifest
-
-例如：
-
-```json
-{
-  "id": "sha256:918cc3...",
-  "tags": [
-    "mmseg:latest"
-  ],
-  "base": {
-    "provider": "colab",
-    "python": "3"
-  },
-  "apt": [
-    "git",
-    "rsync",
-    "libgl1"
-  ],
-  "pip": [
-    "torch",
-    "mmengine",
-    "mmcv",
-    "mmsegmentation"
-  ],
-  "environment": {
-    "PYTHONPATH": "/workspace"
-  },
-  "workdir": "/workspace",
-  "cmd": [
-    "bash"
-  ]
+```go
+type Instruction interface {
+    Type() InstructionType
 }
-```
-
----
-
-# 13. Image materialization
-
-真正 `cbox run` 时：
-
-```text
-Runtime
-   ↓
-bootstrap CBox Worker
-   ↓
-检查 Image cache
-   ↓
-Image 已安装？
- ├─ YES → skip
- └─ NO
-      ↓
-     apt
-      ↓
-     pip
-      ↓
-     COPY
-      ↓
-     RUN
-      ↓
-写入 image marker
-```
-
-例如：
-
-```text
-/content/.cbox/cache/images/
-└── sha256-918cc3.ready
-```
-
-这样同一个 Runtime 连续创建多个相同 Image 的 Container：
-
-```text
-第二次无需重新装 mmcv
-```
-
----
-
-# 14. Container 定义
-
-Container 是：
-
-```text
-ContainerSpec
-+
-Provider Runtime Binding
-+
-Remote Process
-+
-Persistent Metadata
-```
-
-例如：
-
-```json
-{
-  "id": "ca84bd...",
-  "name": "rpgv-full",
-
-  "image": "mmseg:latest",
-
-  "command": [
-    "python",
-    "tools/train.py",
-    "configs/full.py"
-  ],
-
-  "gpu": [
-    "L4",
-    "T4"
-  ],
-
-  "state": "RUNNING"
-}
-```
-
----
-
-# 15. Container 生命周期
-
-定义状态：
-
-```text
-CREATED
-   ↓
-PROVISIONING
-   ↓
-PREPARING
-   ↓
-STARTING
-   ↓
-RUNNING
-   ↓
-EXITED
-```
-
-异常：
-
-```text
-RUNNING
-   ↓
-INTERRUPTED
-   ↓
-RECOVERING
-   ↓
-RUNNING
-```
-
-用户主动：
-
-```text
-RUNNING
- ↓
-STOPPING
- ↓
-STOPPED
-```
-
-删除：
-
-```text
-STOPPED
- ↓
-REMOVED
-```
-
-失败：
-
-```text
-FAILED
-```
-
----
-
-# 16. `cbox create`
-
-与 Docker 一样，可以支持：
-
-```bash
-cbox create \
-    --name exp \
-    --gpu T4 \
-    mmseg \
-    python train.py
-```
-
-此时只创建：
-
-```text
-Container metadata
-```
-
-不启动 Runtime。
-
-状态：
-
-```text
-CREATED
-```
-
-然后：
-
-```bash
-cbox start exp
-```
-
-才真正 provision。
-
----
-
-# 17. `cbox run`
-
-等价于：
-
-```text
-create
-+
-start
-+
-attach
-```
-
-例如：
-
-```bash
-cbox run \
-    --name full \
-    --gpu L4,T4 \
-    mmseg \
-    python train.py
-```
-
-内部：
-
-```text
-Create ContainerSpec
-        ↓
-Find available Runtime
-        ↓
-没有？
-        ↓
-Provision Runtime
-        ↓
-SSH Ready
-        ↓
-Bootstrap Worker
-        ↓
-Materialize Image
-        ↓
-Materialize Volumes
-        ↓
-Start command
-        ↓
-Attach logs
-```
-
----
-
-# 18. Detached mode
-
-```bash
-cbox run -d ...
-```
-
-立即返回：
-
-```text
-ca84bd93582a
-```
-
-后台：
-
-```text
-cboxd
-```
-
-继续管理。
-
----
-
-# 19. Worker process
-
-不要让训练程序直接绑定 SSH shell。
-
-在 Colab：
-
-```text
-/content/.cbox/
-```
-
-建立：
-
-```text
-containers/<ID>/
-├── config.json
-├── stdout.log
-├── stderr.log
-├── exit_code
-├── pid
-└── state
-```
-
-启动：
-
-```bash
-tmux new-session -d \
-    -s cbox-ca84bd \
-    "/content/.cbox/bin/entrypoint.sh ca84bd"
-```
-
----
-
-# 20. Entrypoint
-
-逻辑：
-
-```bash
-#!/usr/bin/env bash
-
-set -o pipefail
-
-cd "$WORKDIR"
-
-"${COMMAND[@]}" \
-    > >(tee -a "$STDOUT") \
-    2> >(tee -a "$STDERR" >&2)
-
-EXIT=$?
-
-echo "$EXIT" > "$EXIT_FILE"
-
-exit "$EXIT"
-```
-
----
-
-# 21. Volume 抽象
-
-这是系统最核心的部分之一。
-
-用户：
-
-```bash
--v /data/Potsdam:/data:ro
-```
-
-用户认为：
-
-```text
-/data/Potsdam
-```
-
-被挂载到了：
-
-```text
-/data
-```
-
-但实际：
-
-```text
-Server
-/data/Potsdam
-      │
-      │ rsync
-      ▼
-Colab
-/content/.cbox/volumes/<ID>
-      │
-      │ symlink
-      ▼
-/data
-```
-
-因此 CBox Volume 本质是：
-
-```text
-Synchronized Remote Volume
-```
-
----
-
-# 22. Volume mode
-
-定义四种：
-
-```text
-ro
-rw
-output
-cache
-```
-
-### ro
-
-启动前：
-
-```text
-Server → Colab
-```
-
-运行过程中不自动回传。
-
-适合：
-
-```text
-dataset
-pretrained weights
-```
-
----
-
-### rw
-
-启动前：
-
-```text
-Server → Colab
-```
-
-停止时：
-
-```text
-Colab → Server
-```
-
-适合一般工作目录。
-
----
-
-### output
-
-重点模式。
-
-启动前可恢复：
-
-```text
-Server → Colab
-```
-
-运行过程中：
-
-```text
-Colab → Server
-```
-
-周期同步。
-
-适合：
-
-```text
-checkpoint
-logs
-prediction
-```
-
----
-
-### cache
-
-只作为 Worker cache：
-
-```text
-Runtime 活着就复用
-Runtime 死亡可以重新生成
-```
-
----
-
-# 23. Named Volume
-
-支持：
-
-```bash
-cbox volume create \
-    --source /data/Potsdam \
-    potsdam
-```
-
-然后：
-
-```bash
-cbox run \
-    --mount source=potsdam,target=/data,mode=ro \
-    ...
-```
-
-查看：
-
-```bash
-cbox volume ls
-```
-
----
-
-# 24. Volume manifest
-
-每个 Volume 生成：
-
-```json
-{
-  "name": "potsdam",
-  "source": "/data/Potsdam",
-  "hash": "85df...",
-  "mode": "ro",
-  "version": 3
-}
-```
-
-Runtime 内：
-
-```text
-/content/.cbox/volumes/
-```
-
-保存相同 manifest。
-
-如果：
-
-```text
-source hash == worker cache hash
-```
-
-：
-
-```text
-CACHE HIT
-```
-
-无需传输。
-
----
-
-# 25. Hash 策略
-
-大型数据不能每次计算所有文件 SHA256。
-
-推荐分两种：
-
-快速模式：
-
-```text
-relative path
-size
-mtime
-```
-
-生成 manifest hash。
-
-严格模式：
-
-```bash
-cbox volume create --checksum ...
-```
-
-使用：
-
-```text
-SHA256
-```
-
-科研数据版本建议支持：
-
-```text
---immutable
-```
-
-意味着源目录变化后：
-
-```text
-创建新 volume version
-```
-
----
-
-# 26. 文件传输
-
-默认：
-
-```text
-rsync over OpenSSH
-```
-
-SSH 底层通过官方：
-
-```bash
-colab ssh --proxy-mode
-```
-
-官方明确支持将它作为 OpenSSH ProxyCommand，用于 IDE 或其他 SSH 工具，因此这是 CBox 最关键的底层能力之一。
-
-SSH config 动态生成：
-
-```text
-Host cbox-ca84bd
-    User root
-
-    IdentityFile ~/.local/share/cbox/keys/worker
-
-    ProxyCommand colab \
-        --config ... \
-        ssh \
-        --proxy-mode \
-        -s cbox-ca84bd \
-        -i ~/.local/share/cbox/keys/worker
-```
-
-然后：
-
-```bash
-rsync ... cbox-ca84bd:/content/...
-```
-
----
-
-# 27. 大量小文件优化
-
-遥感数据经常包含：
-
-```text
-几十万 PNG
-mask
-patch
-```
-
-首次传输支持：
-
-```text
-tar stream
-```
-
-模式：
-
-```text
-Server
-   │ tar
-   ▼
-SSH stream
-   │
-   ▼
-Worker extract
-```
-
-之后更新使用：
-
-```text
-rsync
-```
-
-可以提供：
-
-```bash
---transfer auto
-```
-
-规则：
-
-```text
-文件数少 → rsync
-
-文件数非常多且首次同步
-→ tar-stream
-```
-
----
-
-# 28. `cbox cp`
-
-语义与 Docker 一致：
-
-```bash
-cbox cp local.file container:/workspace/
-```
-
-以及：
-
-```bash
-cbox cp container:/output/model.pth .
-```
-
-内部：
-
-```text
-rsync
-```
-
----
-
-# 29. `cbox exec`
-
-例如：
-
-```bash
-cbox exec experiment nvidia-smi
-```
-
-内部：
-
-```text
-SSH → exec command
-```
-
-交互式：
-
-```bash
-cbox exec -it experiment bash
-```
-
-直接：
-
-```text
-ssh -tt
-```
-
-进入 Runtime。
-
----
-
-# 30. `cbox logs`
-
-```bash
-cbox logs exp
-```
-
-读取：
-
-```text
-stdout.log
-stderr.log
-```
-
-实时：
-
-```bash
-cbox logs -f exp
 ```
 
 实现：
 
 ```text
-tail -F
+FromInstruction
+AptInstruction
+PipInstruction
+EnvInstruction
+WorkdirInstruction
+CopyInstruction
+RunInstruction
+CmdInstruction
 ```
 
-通过 SSH 转发。
-
-支持：
-
-```bash
---tail 100
---since 10m
--f
-```
-
----
-
-# 31. `cbox ps`
-
-输出：
+不要一开始支持：
 
 ```text
-CONTAINER ID  IMAGE          GPU   STATUS       NAMES
-ca84bd9358    mmseg:latest   L4    Up 2h        full
-702b11aa9e    mmseg:latest   T4    Up 31m       no-freq
-```
-
-全部：
-
-```bash
-cbox ps -a
+ARG
+ONBUILD
+ENTRYPOINT
+USER
+SHELL
+ADD
+multi-stage build
 ```
 
 ---
 
-# 32. `cbox inspect`
+# 33. Image Build
 
-```bash
-cbox inspect full
+`cbox build` 并不真正创建 Colab Runtime。
+
+逻辑：
+
+```text
+Parse
+↓
+Normalize
+↓
+Validate
+↓
+Collect referenced files
+↓
+Hash
+↓
+Create manifest
+↓
+Create bootstrap plan
+↓
+Persist
 ```
 
-输出：
+---
 
-```json
-{
-  "Id": "ca84bd...",
-  "Name": "full",
+# 34. Image Hash
 
-  "Image": "mmseg:latest",
+建议：
 
-  "State": {
-    "Status": "running",
-    "ExitCode": null
-  },
+```text
+SHA256(
+ normalized Cboxfile
+ +
+ referenced file contents
+)
+```
 
-  "Resource": {
-    "GPURequested": [
-      "L4",
-      "T4"
-    ],
-    "GPUAssigned": "L4"
-  },
+而不是：
 
-  "Runtime": {
-    "Provider": "colab",
-    "Session": "cbox-ca84bd",
-    "Account": "colab-a"
-  },
+```text
+mtime
+```
 
-  "Mounts": [
-    {
-      "Source": "/data/Potsdam",
-      "Destination": "/data",
-      "Mode": "ro"
-    }
-  ]
+确保 reproducibility。
+
+---
+
+# 35. ImageManifest
+
+```go
+type ImageManifest struct {
+    Base string
+
+    Apt []string
+    Pip []string
+
+    Env map[string]string
+
+    WorkDir string
+
+    Copies []CopySpec
+
+    Runs []string
+
+    Command []string
 }
 ```
 
 ---
 
-# 33. `cbox stats`
+# 36. Image Materialization
+
+Container 启动后：
+
+```text
+Worker
+ ↓
+check image cache
+ ↓
+MISS
+ ↓
+APT
+ ↓
+PIP
+ ↓
+COPY
+ ↓
+RUN
+ ↓
+ready marker
+```
 
 例如：
 
-```bash
-cbox stats
-```
-
-返回：
-
 ```text
-NAME       GPU  GPU MEM       GPU UTIL  CPU   RAM
-full       L4   19.2/24 GB    97%       81%   18 GB
-no-freq    T4   12.3/15 GB    89%       67%   14 GB
-```
-
-Worker 端执行：
-
-```bash
-nvidia-smi
-ps
-free
-```
-
-解析为 JSON。
-
----
-
-# 34. stop 语义
-
-```bash
-cbox stop full
-```
-
-流程：
-
-```text
-SIGTERM process
-       ↓
-等待 timeout
-       ↓
-必要时 SIGKILL
-       ↓
-同步 output Volume
-       ↓
-记录 Exit State
-       ↓
-释放 Runtime
-```
-
-Runtime filesystem 随后不可依赖。
-
----
-
-# 35. start 语义
-
-因为 Colab VM 已经不存在：
-
-```bash
-cbox start full
-```
-
-实际：
-
-```text
-读取 ContainerSpec
-       ↓
-Provision 新 Runtime
-       ↓
-Materialize Image
-       ↓
-Restore Volumes
-       ↓
-Restore output/checkpoint
-       ↓
-重新执行 Command
-```
-
-所以：
-
-```text
-start != resume old VM
-```
-
-而是：
-
-```text
-reconstruct container
+/content/.cbox/images/<imageID>/ready
 ```
 
 ---
 
-# 36. Restart
+# 37. Image cache
 
-```bash
-cbox restart full
+Runtime：
+
+```go
+type RuntimeCache struct {
+    Images  map[string]bool
+    Volumes map[string]string
+}
 ```
 
-执行：
+用于 Scheduler。
 
-```text
-stop
-+
-start
+---
+
+# 38. Volume
+
+```go
+type Volume struct {
+    ID string
+
+    Name string
+
+    Source string
+
+    Mode VolumeMode
+
+    Immutable bool
+
+    ManifestHash string
+
+    CreatedAt time.Time
+}
 ```
 
 ---
 
-# 37. 自动恢复
+# 39. VolumeMode
 
-提供：
+```go
+type VolumeMode string
 
-```bash
---restart unless-stopped
-```
+const (
+    VolumeReadOnly VolumeMode = "ro"
 
-类似 Docker。
+    VolumeReadWrite VolumeMode = "rw"
 
-策略：
+    VolumeOutput VolumeMode = "output"
 
-```text
-no
-on-failure
-unless-stopped
-always
-```
-
-Colab Runtime 意外消失：
-
-```text
-Runtime LOST
-      ↓
-Container INTERRUPTED
-      ↓
-output 已定期同步
-      ↓
-Provision new Runtime
-      ↓
-Restore
-      ↓
-run command
-```
-
----
-
-# 38. 深度学习 checkpoint 恢复
-
-CBox 不应该假设：
-
-```text
-任意程序都能自动 resume
-```
-
-因此提供 Hook：
-
-```yaml
-recovery:
-  resume_command: >
-    python tools/train.py
-    configs/full.py
-    --resume
-```
-
-Cboxfile 或 run 参数：
-
-```bash
---resume-cmd "python tools/train.py ... --resume"
-```
-
-初次运行：
-
-```text
-command
-```
-
-恢复：
-
-```text
-resume_command
-```
-
-对于你的 MMSegmentation：
-
-```text
---resume
-```
-
-非常适合。
-
----
-
-# 39. Healthcheck
-
-Cboxfile：
-
-```dockerfile
-HEALTHCHECK nvidia-smi
-```
-
-或：
-
-```yaml
-healthcheck:
-  command: python health.py
-  interval: 30
-  retries: 3
-```
-
-状态：
-
-```text
-healthy
-unhealthy
-unknown
-```
-
----
-
-# 40. Runtime reuse
-
-与 Docker 最大不同之一。
-
-创建 Colab VM 有成本。
-
-所以 Engine 可以：
-
-```text
-Runtime Pool
-```
-
-一个 Runtime 的主 Container 完成后：
-
-```text
-不立即销毁
-```
-
-而是：
-
-```text
-IDLE
-```
-
-等待：
-
-```text
-idle_timeout = 30 min
-```
-
-如果下一 Container：
-
-```text
-同 account
-兼容 GPU
-```
-
-直接复用。
-
-这让：
-
-```text
-数据缓存
-pip 环境
-image cache
-```
-
-保留下来。
-
----
-
-# 41. Runtime 与 Container 的映射
-
-MVP：
-
-```text
-1 Runtime
-=
-1 Running Container
-```
-
-最简单、最安全。
-
-未来可以允许：
-
-```text
-1 Runtime
-=
-多个 sequential containers
-```
-
-但不要同时跑多个训练 Container。
-
----
-
-# 42. Scheduler
-
-用户虽然看不到 Scheduler，但内部必须有。
-
-调度优先级：
-
-```text
-GPU compatibility
-      ↓
-existing idle Runtime
-      ↓
-image cache hit
-      ↓
-volume cache hit
-      ↓
-account availability
-      ↓
-new Runtime
-```
-
-可以定义 score：
-
-```python
-score = (
-    gpu_match * 100
-    + image_cache * 30
-    + volume_cache * 50
-    + idle_runtime * 100
+    VolumeCache VolumeMode = "cache"
 )
 ```
 
 ---
 
-# 43. GPU preference
+# 40. Mount
 
-用户：
+```go
+type Mount struct {
+    VolumeID string
+
+    Source string
+
+    Target string
+
+    Mode VolumeMode
+}
+```
+
+---
+
+# 41. Volume 实际语义
+
+例如：
 
 ```bash
---gpu L4,T4
+-v /data/Potsdam:/data:ro
 ```
-
-表示：
-
-```text
-prefer L4
-fallback T4
-```
-
-不是同时请求两张卡。
 
 内部：
 
 ```text
-L4 allocation
- ↓ fail
-T4 allocation
+/data/Potsdam
+      ↓
+rsync
+      ↓
+/content/.cbox/volumes/<hash>
+      ↓
+symlink
+      ↓
+/data
 ```
 
-官方当前 CLI 支持指定 T4、L4、G4、A100、H100 等 accelerator，但最终能否得到目标 GPU 取决于账户资格和后端资源。
+不是真实网络 mount。
 
 ---
 
-# 44. Context
-
-模仿：
-
-```bash
-docker context
-```
+# 42. `output` Volume
 
 例如：
 
 ```bash
-cbox context ls
+-v ./runs/full:/output:output
 ```
 
-：
+行为：
+
+启动：
 
 ```text
-NAME          PROVIDER   PROFILE
-colab-main *  colab      account-a
-colab-alt     colab      account-b
-colab-pool    colab      auto
+server → runtime
 ```
 
-切换：
-
-```bash
-cbox context use colab-alt
-```
-
----
-
-# 45. Colab Profile
-
-每个账户使用完全独立：
+训练：
 
 ```text
-HOME
-OAuth config
-sessions.json
+runtime → server
 ```
 
-例如：
+周期同步：
 
 ```text
-~/.local/share/cbox/profiles/
-├── account-a/
-│   ├── home/
-│   └── sessions.json
-└── account-b/
-```
-
-启动 CLI：
-
-```text
-HOME=<profile-home>
-colab --config <sessions> ...
-```
-
-避免两个账户：
-
-```text
-token
-session
-OAuth
-```
-
-互相污染。
-
----
-
-# 46. Compose
-
-文件：
-
-```text
-cbox-compose.yaml
-```
-
-例如：
-
-```yaml
-version: "1"
-
-services:
-
-  full:
-    image: wwtp:mmseg
-
-    gpu:
-      preference:
-        - L4
-        - T4
-
-    volumes:
-      - source: /data/WWTP
-        target: /data
-        mode: ro
-
-      - source: ./runs/full
-        target: /output
-        mode: output
-
-    command:
-      - python
-      - tools/train.py
-      - configs/full.py
-
-    restart: unless-stopped
-
-
-  no_frequency:
-    image: wwtp:mmseg
-
-    gpu:
-      preference:
-        - T4
-
-    volumes:
-      - source: /data/WWTP
-        target: /data
-        mode: ro
-
-      - source: ./runs/no_frequency
-        target: /output
-        mode: output
-
-    command:
-      - python
-      - tools/train.py
-      - configs/no_frequency.py
-```
-
-使用：
-
-```bash
-cbox compose up -d
-```
-
-查看：
-
-```bash
-cbox compose ps
+every 300/600 sec
 ```
 
 停止：
 
+```text
+final sync
+```
+
+---
+
+# 43. SyncService
+
+```go
+type SyncService struct {
+    interval time.Duration
+
+    transportFactory TransportFactory
+
+    logger *slog.Logger
+}
+```
+
+每个 running Container：
+
+```go
+func (s *SyncService) Start(
+    ctx context.Context,
+    c *Container,
+) {
+    ticker := time.NewTicker(s.interval)
+
+    go func() {
+        defer ticker.Stop()
+
+        for {
+            select {
+            case <-ctx.Done():
+                return
+
+            case <-ticker.C:
+                s.syncOutputs(...)
+            }
+        }
+    }()
+}
+```
+
+---
+
+# 44. 为什么 Go 特别适合这里
+
+一个 Container 可以对应：
+
+```text
+goroutine:
+ runtime monitor
+
+goroutine:
+ output sync
+
+goroutine:
+ process monitor
+
+goroutine:
+ metrics
+
+goroutine:
+ recovery controller
+```
+
+全部绑定：
+
+```go
+containerCtx
+```
+
+当：
+
 ```bash
-cbox compose down
+cbox stop
+```
+
+：
+
+```go
+cancel()
+```
+
+整个 Container 的后台协程统一退出。
+
+---
+
+# 45. Context hierarchy
+
+推荐：
+
+```text
+daemonCtx
+   │
+   ├── runtimeCtx
+   │      │
+   │      └── containerCtx
+   │
+   └── schedulerCtx
+```
+
+关闭 daemon：
+
+```go
+daemonCancel()
+```
+
+逐层取消。
+
+---
+
+# 46. Container Runtime Controller
+
+核心：
+
+```go
+type Controller struct {
+    container *Container
+
+    cancel context.CancelFunc
+
+    wg sync.WaitGroup
+}
+```
+
+每个运行中的 Container 一个 controller。
+
+---
+
+# 47. Scheduler
+
+接口：
+
+```go
+type Scheduler interface {
+    AcquireRuntime(
+        ctx context.Context,
+        container *Container,
+    ) (*Runtime, error)
+}
+```
+
+策略：
+
+```text
+1 GPU match
+2 idle runtime
+3 volume cache
+4 image cache
+5 account availability
+6 allocate new runtime
 ```
 
 ---
 
-# 47. Compose 调度
+# 48. Scheduler scoring
 
-例如两个账户：
+例如：
 
-```text
-Account A → full
-Account B → no_frequency
-```
+```go
+func score(
+    runtime Runtime,
+    container Container,
+) int {
 
-其余：
+    score := 0
 
-```text
-QUEUED
-```
+    if runtime.State == RuntimeIdle {
+        score += 100
+    }
 
-当其中一个结束：
+    if runtime.Cache.Images[
+        container.ImageID
+    ] {
+        score += 30
+    }
 
-```text
-Runtime 如果仍然可用
-↓
-下一个 service
-```
+    for _, mount := range container.Mounts {
+        if runtime.Cache.Volumes[
+            mount.VolumeID
+        ] != "" {
+            score += 50
+        }
+    }
 
-并复用 dataset cache。
-
----
-
-# 48. Engine REST API
-
-Unix Socket 上暴露：
-
-```text
-GET    /version
-
-POST   /images/build
-GET    /images
-DELETE /images/{id}
-
-POST   /containers/create
-POST   /containers/{id}/start
-POST   /containers/{id}/stop
-POST   /containers/{id}/restart
-DELETE /containers/{id}
-
-GET    /containers
-GET    /containers/{id}
-
-POST   /containers/{id}/exec
-
-GET    /containers/{id}/logs
-GET    /containers/{id}/stats
-
-POST   /volumes
-GET    /volumes
-DELETE /volumes/{name}
-
-GET    /contexts
-POST   /contexts/{name}/use
+    return score
+}
 ```
 
 ---
 
-# 49. Database
+# 49. MVP 调度原则
 
-SQLite：
+第一版严格：
 
 ```text
-~/.local/share/cbox/cbox.db
+一个 Runtime
+同时最多一个 Container
 ```
 
-核心表：
-
-## images
+不要做：
 
 ```text
-id
-created_at
-manifest
+一个 L4 同时跑三个训练任务
 ```
 
-## image_tags
+Runtime 可以：
 
 ```text
-repository
-tag
-image_id
+sequentially reuse
 ```
 
-## containers
+不能：
 
 ```text
-id
-name
-image_id
-state
-command
-workdir
-restart_policy
-exit_code
-created_at
-started_at
-finished_at
-runtime_id
-```
-
-## volumes
-
-```text
-id
-name
-source
-hash
-mode
-created_at
-```
-
-## container_mounts
-
-```text
-container_id
-volume_id
-target
-mode
-```
-
-## runtimes
-
-```text
-id
-provider
-provider_session
-profile
-accelerator
-state
-created_at
-last_seen
-```
-
-## runtime_cache
-
-```text
-runtime_id
-object_type
-object_id
-hash
-```
-
-## events
-
-```text
-id
-object_type
-object_id
-event
-timestamp
-payload
+parallel reuse
 ```
 
 ---
 
-# 50. Event system
+# 50. Runtime Pool
 
-必须实现内部事件：
+Container 完成后：
 
 ```text
-container.create
-container.start
-container.running
-container.exit
-
-runtime.provision
-runtime.ready
-runtime.lost
-runtime.stop
-
-image.materialize.start
-image.materialize.done
-
-volume.sync.start
-volume.sync.done
-
-container.recover.start
-container.recover.done
+Runtime
+RUNNING
+ ↓
+IDLE
 ```
 
-所有事件写入：
+不要立即：
 
 ```text
-events
+stop
 ```
 
-方便故障排查。
-
----
-
-# 51. 本地目录布局
-
-遵循 XDG：
+默认：
 
 ```text
-~/.config/cbox/
-├── config.yaml
-└── contexts.yaml
+idleTimeout = 30 min
 ```
 
-数据：
+方便下一个实验复用：
 
 ```text
-~/.local/share/cbox/
-├── cbox.db
-├── images/
-├── volumes/
-├── containers/
-├── profiles/
-├── keys/
-└── logs/
-```
-
-runtime：
-
-```text
-$XDG_RUNTIME_DIR/cbox/
-└── cbox.sock
+Dataset
+Image
+Python packages
 ```
 
 ---
 
-# 52. Worker filesystem
+# 51. Runtime pool goroutine
 
-Colab：
+```go
+func (p *Pool) Reaper(
+    ctx context.Context,
+) {
+    ticker := time.NewTicker(
+        time.Minute,
+    )
+
+    for {
+        select {
+        case <-ctx.Done():
+            return
+
+        case <-ticker.C:
+            p.stopExpired()
+        }
+    }
+}
+```
+
+---
+
+# 52. Worker bootstrap
+
+Runtime Ready 后：
 
 ```text
 /content/.cbox/
@@ -2161,1338 +1731,2099 @@ Colab：
 └── worker.json
 ```
 
-项目：
+bootstrap：
 
 ```text
-/workspace
-```
-
-可以软链接：
-
-```text
-/workspace
-→
-/content/.cbox/containers/<ID>/workspace
-```
-
----
-
-# 53. Worker Agent
-
-第一版不需要真正常驻 Python daemon。
-
-因为：
-
-```text
-SSH + shell
-```
-
-已经够用。
-
-只需 bootstrap 一组脚本：
-
-```text
-cbox-worker
-cbox-exec
-cbox-inspect
-cbox-stats
-```
-
-第二阶段再考虑：
-
-```text
-轻量 Python Worker Agent
-```
-
----
-
-# 54. Colab Provider Interface
-
-```python
-class Provider(ABC):
-
-    async def create_runtime(
-        self,
-        request: RuntimeRequest
-    ) -> Runtime:
-        ...
-
-    async def stop_runtime(
-        self,
-        runtime: Runtime
-    ) -> None:
-        ...
-
-    async def runtime_status(
-        self,
-        runtime: Runtime
-    ) -> RuntimeStatus:
-        ...
-
-    async def exec(
-        self,
-        runtime: Runtime,
-        command: list[str]
-    ) -> ExecResult:
-        ...
-
-    async def open_transport(
-        self,
-        runtime: Runtime
-    ) -> Transport:
-        ...
-```
-
----
-
-# 55. ColabProvider
-
-内部 wrapper：
-
-```python
-class ColabCLI:
-
-    async def new(...):
-        ...
-
-    async def sessions(...):
-        ...
-
-    async def status(...):
-        ...
-
-    async def stop(...):
-        ...
-```
-
-执行：
-
-```python
-proc = await asyncio.create_subprocess_exec(
-    "colab",
-    "new",
-    "-s",
-    session,
-    "--gpu",
-    accelerator,
-)
-```
-
-不要 import 官方 CLI 私有模块。
-
-只把：
-
-```text
-CLI
-```
-
-作为稳定边界。
-
----
-
-# 56. Transport interface
-
-```python
-class Transport:
-
-    async def exec(...):
-        ...
-
-    async def upload(...):
-        ...
-
-    async def download(...):
-        ...
-
-    async def sync_to(...):
-        ...
-
-    async def sync_from(...):
-        ...
-```
-
-实现：
-
-```text
-SSHTransport
-```
-
-未来可：
-
-```text
-LocalTransport
-```
-
----
-
-# 57. SSH multiplexing
-
-大量：
-
-```text
-logs
-stats
+apt install:
 rsync
-healthcheck
+tmux
 ```
 
-如果每次重新建立 Colab WebSocket SSH 成本较高。
-
-建议使用 OpenSSH：
-
-```text
-ControlMaster auto
-ControlPersist 600
-ControlPath ~/.cache/cbox/ssh/%C
-```
-
-能显著降低重复连接开销。
+尽量不要在 Worker 上跑完整 CBox Go daemon。
 
 ---
 
-# 58. Runtime health monitor
+# 53. Remote execution
 
-cboxd：
+第一版继续用：
 
 ```text
-每 30 秒
+tmux
+```
+
+因为成熟稳定。
+
+Container 启动：
+
+```bash
+tmux new-session -d \
+    -s cbox-ca84bd \
+    "/content/.cbox/bin/entrypoint ca84bd"
+```
+
+---
+
+# 54. Remote metadata
+
+```text
+/content/.cbox/containers/<id>/
+├── config.json
+├── stdout.log
+├── stderr.log
+├── pid
+├── exit_code
+└── state
+```
+
+---
+
+# 55. Process Monitor
+
+Daemon：
+
+```text
+每 10~30s
 ```
 
 检查：
 
 ```text
-colab status
-+
-SSH echo
+Runtime alive?
+tmux session alive?
+exit_code exists?
+```
+
+逻辑：
+
+```text
+tmux exists
+→ RUNNING
+
+tmux absent + exit_code = 0
+→ EXITED
+
+tmux absent + exit_code != 0
+→ FAILED
+
+runtime inaccessible
+→ INTERRUPTED
+```
+
+---
+
+# 56. Recovery
+
+这是 V2 的核心。
+
+Runtime 丢失：
+
+```text
+RUNNING
+ ↓
+INTERRUPTED
+```
+
+检查：
+
+```go
+container.RestartPolicy
+```
+
+如果允许：
+
+```text
+INTERRUPTED
+ ↓
+RECOVERING
+ ↓
+PROVISIONING
+```
+
+---
+
+# 57. RestartPolicy
+
+```go
+type RestartPolicy string
+
+const (
+    RestartNo RestartPolicy = "no"
+
+    RestartOnFailure RestartPolicy =
+        "on-failure"
+
+    RestartUnlessStopped RestartPolicy =
+        "unless-stopped"
+
+    RestartAlways RestartPolicy =
+        "always"
+)
+```
+
+---
+
+# 58. ResumeCommand
+
+普通程序无法凭空恢复。
+
+所以：
+
+```go
+type Container struct {
+    ...
+    ResumeCommand []string
+}
+```
+
+第一次：
+
+```text
+Command
+```
+
+恢复：
+
+```text
+ResumeCommand
 ```
 
 例如：
 
 ```bash
-echo CBOX_HEALTHY
-```
-
-状态：
-
-```text
-READY
-BUSY
-UNREACHABLE
-LOST
+--resume-command \
+  "python tools/train.py configs/a.py --resume"
 ```
 
 ---
 
-# 59. 容器进程检查
+# 59. Deep Learning Recovery
 
-执行：
+例如：
+
+```text
+/output/latest.pth
+```
+
+通过 output volume：
+
+```text
+Colab
+↓
+Server
+```
+
+新 Runtime：
+
+```text
+Server
+↓
+Colab
+```
+
+然后：
 
 ```bash
-tmux has-session -t cbox-ID
-```
-
-同时检查：
-
-```text
-exit_code
-```
-
-情况：
-
-```text
-tmux存在
-→ RUNNING
-
-tmux不存在 + exit_code=0
-→ EXITED success
-
-tmux不存在 + exit_code!=0
-→ EXITED failure
+python tools/train.py ... --resume
 ```
 
 ---
 
-# 60. Output 自动同步
+# 60. SQLite
 
-Daemon：
-
-```text
-每 N 分钟
-```
-
-针对：
+推荐：
 
 ```text
-mode=output
+modernc.org/sqlite
 ```
 
-执行：
+这样可以：
 
 ```text
-rsync Worker → Server
+pure Go
+no CGO
+cross compile easier
 ```
 
-建议默认：
+---
+
+# 61. DB tables
+
+至少：
 
 ```text
-300 秒
+images
+image_tags
+
+containers
+
+volumes
+container_mounts
+
+runtimes
+
+runtime_cache
+
+contexts
+
+events
 ```
 
-训练场景可以：
+---
+
+# 62. Container SQL
+
+```sql
+CREATE TABLE containers (
+    id TEXT PRIMARY KEY,
+
+    name TEXT UNIQUE NOT NULL,
+
+    image_id TEXT NOT NULL,
+
+    state TEXT NOT NULL,
+
+    command_json TEXT NOT NULL,
+
+    env_json TEXT,
+
+    resource_json TEXT,
+
+    restart_policy TEXT NOT NULL,
+
+    resume_command_json TEXT,
+
+    runtime_id TEXT,
+
+    exit_code INTEGER,
+
+    created_at DATETIME NOT NULL,
+
+    started_at DATETIME,
+
+    finished_at DATETIME
+);
+```
+
+---
+
+# 63. Event store
+
+所有重要操作：
 
 ```text
-600 秒
+container.created
+container.started
+container.exited
+
+runtime.created
+runtime.ready
+runtime.lost
+
+volume.sync.started
+volume.sync.completed
+
+recovery.started
+recovery.completed
 ```
+
+写：
+
+```text
+events
+```
+
+表。
+
+---
+
+# 64. Event struct
+
+```go
+type Event struct {
+    ID string
+
+    ObjectType string
+    ObjectID string
+
+    Type string
+
+    Timestamp time.Time
+
+    Payload json.RawMessage
+}
+```
+
+后续：
+
+```bash
+cbox events full
+```
+
+可以排错。
+
+---
+
+# 65. Repository pattern
+
+例如：
+
+```go
+type ContainerRepository interface {
+    Create(
+        ctx context.Context,
+        c *Container,
+    ) error
+
+    Get(
+        ctx context.Context,
+        id string,
+    ) (*Container, error)
+
+    UpdateState(
+        ctx context.Context,
+        id string,
+        state ContainerState,
+    ) error
+
+    List(
+        ctx context.Context,
+    ) ([]Container, error)
+}
+```
+
+业务逻辑不要直接写 SQL。
+
+---
+
+# 66. Transaction
+
+状态切换：
+
+```text
+Container state
+Runtime binding
+Event
+```
+
+应该：
+
+```text
+同一 SQLite transaction
+```
+
+避免 daemon crash 后：
+
+```text
+container RUNNING
+但 runtime_id 没写
+```
+
+---
+
+# 67. Daemon recovery on startup
+
+`cboxd` 启动：
+
+```text
+load DB
+↓
+找：
+ RUNNING
+ PREPARING
+ STARTING
+ RECOVERING
+↓
+查询 runtime
+↓
+reconcile
+```
+
+类似 Kubernetes reconciliation。
+
+---
+
+# 68. Reconciliation Loop
+
+这是长期来看非常关键的设计。
+
+不要把系统写成：
+
+```text
+执行一次命令
+假设成功
+```
+
+而要：
+
+```text
+Desired State
+vs
+Observed State
+```
+
+例如：
+
+```go
+Container{
+    DesiredState: Running,
+}
+```
+
+实际：
+
+```text
+Runtime missing
+```
+
+Controller：
+
+```text
+重新 provision
+```
+
+---
+
+# 69. 可以考虑增加 DesiredState
+
+例如：
+
+```go
+type DesiredState string
+
+const (
+    DesiredRunning DesiredState = "running"
+
+    DesiredStopped DesiredState = "stopped"
+)
+```
+
+这是比只保存 `state` 更稳的设计。
+
+---
+
+# 70. Controller pattern
+
+核心思想：
+
+```text
+用户：
+cbox start
+
+只是写：
+DesiredState = RUNNING
+
+Controller：
+负责最终让实际状态达到 RUNNING
+```
+
+以后自动恢复会非常自然。
+
+---
+
+# 71. CLI
+
+推荐 Cobra：
+
+```text
+cmd/cbox/root.go
+
+cmd/cbox/run.go
+cmd/cbox/ps.go
+cmd/cbox/logs.go
+cmd/cbox/exec.go
+...
+```
+
+---
+
+# 72. CLI hierarchy
+
+```text
+cbox
+
+├── build
+├── images
+├── rmi
+│
+├── create
+├── run
+├── start
+├── stop
+├── restart
+├── rm
+│
+├── ps
+├── inspect
+├── logs
+├── exec
+├── cp
+├── stats
+│
+├── volume
+│   ├── create
+│   ├── ls
+│   ├── inspect
+│   └── rm
+│
+├── context
+│   ├── create
+│   ├── ls
+│   ├── use
+│   └── rm
+│
+└── compose
+    ├── up
+    ├── ps
+    ├── logs
+    └── down
+```
+
+---
+
+# 73. `cbox run`
+
+流程：
+
+```text
+Parse CLI
+↓
+CreateContainer API
+↓
+StartContainer API
+↓
+如果 -d
+    return ID
+否则
+    attach logs
+```
+
+---
+
+# 74. cbox ps
+
+Server 返回 JSON：
+
+```json
+[
+  {
+    "id": "abc123",
+    "name": "full",
+    "image": "mmseg:latest",
+    "gpu": "L4",
+    "state": "running"
+  }
+]
+```
+
+Client 自己格式化表格。
+
+---
+
+# 75. 不要让 daemon 输出表格
+
+Daemon 永远：
+
+```text
+structured JSON
+```
+
+CLI：
+
+```text
+human-readable output
+```
+
+Agent：
+
+```text
+--format json
+```
+
+可以直接调用。
+
+---
+
+# 76. 支持 `--format json`
+
+例如：
+
+```bash
+cbox ps --format json
+```
+
+对于以后 Agent/Codex 调用很重要。
+
+---
+
+# 77. cbox logs
+
+非 follow：
+
+```text
+HTTP API
+↓
+返回持久日志
+```
+
+follow：
+
+推荐：
+
+```text
+HTTP streaming
+```
+
+或者：
+
+```text
+CLI 直接 SSH tail
+```
+
+MVP 推荐后者。
+
+---
+
+# 78. cbox stats
+
+调用：
+
+```text
+SSH
+↓
+nvidia-smi --query...
+↓
+parse CSV
+```
+
+定义：
+
+```go
+type Stats struct {
+    GPUName string
+
+    GPUMemoryUsedMB int
+    GPUMemoryTotalMB int
+
+    GPUUtilization float64
+
+    MemoryUsedMB int64
+    MemoryTotalMB int64
+}
+```
+
+---
+
+# 79. Context
+
+Context 定义：
+
+```go
+type Context struct {
+    Name string
+
+    Provider string
+
+    Profile string
+
+    AutoSchedule bool
+}
+```
+
+例如：
+
+```text
+colab-a
+colab-b
+colab-pool
+```
+
+---
+
+# 80. 多账户
+
+推荐：
+
+```text
+~/.local/share/cbox/profiles/
+├── colab-a/
+│   └── home/
+└── colab-b/
+    └── home/
+```
+
+每次：
+
+```go
+cmd.Env = append(
+    os.Environ(),
+    "HOME="+profile.Home,
+)
+```
+
+隔离官方 CLI 状态。
+
+---
+
+# 81. Compose
+
+建议 V3 做。
+
+```yaml
+services:
+
+  full:
+    image: mmseg:latest
+
+    gpu:
+      - L4
+      - T4
+
+    volumes:
+      - /data/WWTP:/data:ro
+      - ./runs/full:/output:output
+
+    command:
+      - python
+      - tools/train.py
+      - configs/full.py
+
+    restart: unless-stopped
+
+
+  no_freq:
+    image: mmseg:latest
+
+    gpu:
+      - T4
+
+    volumes:
+      - /data/WWTP:/data:ro
+      - ./runs/no_freq:/output:output
+
+    command:
+      - python
+      - tools/train.py
+      - configs/no_freq.py
+```
+
+---
+
+# 82. Compose 不需要单独 Job 系统
+
+Compose 的 Service 最终：
+
+```text
+Service
+ ↓
+ContainerSpec
+ ↓
+Container
+```
+
+避免：
+
+```text
+Container
+Job
+Task
+Service
+```
+
+概念爆炸。
+
+---
+
+# 83. Configuration
+
+```text
+~/.config/cbox/config.yaml
+```
+
+例如：
+
+```yaml
+engine:
+  data_dir: ~/.local/share/cbox
+
+runtime:
+  idle_timeout: 30m
+
+sync:
+  interval: 10m
+  transfer: auto
+
+ssh:
+  binary: ssh
+  control_persist: 10m
+
+rsync:
+  binary: rsync
+
+provider:
+  colab_binary: colab
+
+recovery:
+  enabled: true
+  max_attempts: 3
+
+logging:
+  level: info
+```
+
+---
+
+# 84. Config struct
+
+```go
+type Config struct {
+    Engine EngineConfig `yaml:"engine"`
+
+    Runtime RuntimeConfig `yaml:"runtime"`
+
+    Sync SyncConfig `yaml:"sync"`
+
+    SSH SSHConfig `yaml:"ssh"`
+
+    Provider ProviderConfig `yaml:"provider"`
+
+    Recovery RecoveryConfig `yaml:"recovery"`
+}
+```
+
+---
+
+# 85. Duration parsing
+
+推荐使用：
+
+```go
+time.ParseDuration
+```
+
+所以配置：
+
+```text
+10m
+30m
+1h
+```
+
+自然支持。
+
+---
+
+# 86. Logging
 
 使用：
 
-```text
---partial
---append-verify
+```go
+log/slog
 ```
 
-时要注意正在写入 checkpoint 的竞争。
+例如：
 
-更安全：
-
-```text
-只同步已经 rename 完成的 checkpoint
+```go
+logger.Info(
+    "runtime created",
+    "runtime_id", runtime.ID,
+    "gpu", runtime.ActualGPU,
+)
 ```
 
-建议训练程序：
+daemon 日志：
 
 ```text
-tmp.pth
-↓
-atomic rename
-↓
-epoch_10.pth
+~/.local/share/cbox/logs/cboxd.log
 ```
 
----
-
-# 61. 日志持久化
-
-Daemon 同时可以：
-
-```text
-tail offset
-```
-
-持续拉日志。
-
-服务器最终：
-
-```text
-~/.local/share/cbox/containers/<ID>/
-├── stdout.log
-└── stderr.log
-```
-
-即使 Runtime 死亡：
+systemd 下：
 
 ```bash
-cbox logs old-container
+journalctl --user -u cboxd
 ```
-
-仍能查看最后日志。
 
 ---
 
-# 62. Error taxonomy
+# 87. Structured logging
 
-统一定义：
+调试时：
+
+```json
+{
+  "level": "INFO",
+  "event": "runtime.created",
+  "runtime": "abc",
+  "gpu": "T4"
+}
+```
+
+以后很好做 UI。
+
+---
+
+# 88. Errors
+
+定义 error types。
+
+```go
+type AllocationError struct {
+    GPU string
+    Err error
+}
+
+func (e *AllocationError) Error() string {
+    ...
+}
+```
+
+分类：
 
 ```text
 ProviderError
+
 AllocationError
-AuthenticationError
+
 TransportError
-ImageBuildError
-ImageMaterializationError
-VolumeSyncError
-ContainerStartError
-ContainerLostError
+
+AuthenticationError
+
+ImageError
+
+VolumeError
+
+ContainerError
+
 RecoveryError
 ```
 
-用户输出例如：
+---
+
+# 89. errors.Is / errors.As
+
+必须使用 Go idiomatic error wrapping：
+
+```go
+return fmt.Errorf(
+    "create runtime: %w",
+    err,
+)
+```
+
+不要依靠：
 
 ```text
-Error: GPU allocation failed.
+string matching
+```
 
-Requested:
-  L4
+作为业务错误机制。
 
-Profile:
-  colab-a
+---
 
-Fallback:
-  T4
+# 90. 外部 CLI 错误解析
 
-Trying fallback T4...
+但 `colab` 本身属于 subprocess。
+
+所以：
+
+```go
+type CommandError struct {
+    ExitCode int
+    Stdout string
+    Stderr string
+}
+```
+
+ColabProvider 再把它转换成：
+
+```text
+AllocationError
+AuthenticationError
+ProviderError
 ```
 
 ---
 
-# 63. Exit code
+# 91. CommandRunner
 
-CLI exit code：
+建议把 subprocess 抽象出来：
 
-```text
-0 success
-1 generic
-2 usage/config
-10 provider
-11 allocation
-12 transport
-20 image
-30 volume
-40 container
+```go
+type CommandRunner interface {
+    Run(
+        ctx context.Context,
+        name string,
+        args []string,
+        opts CommandOptions,
+    ) (*CommandResult, error)
+}
 ```
 
-方便：
+价值：
 
 ```text
-shell scripts
-CI
-Agent
+单元测试可 mock
 ```
 
-判断。
+否则 Provider 非常难测试。
 
 ---
 
-# 64. Security
+# 92. CommandResult
 
-服务器保存：
+```go
+type CommandResult struct {
+    ExitCode int
 
-```text
-Colab OAuth credentials
-SSH private key
+    Stdout []byte
+    Stderr []byte
+}
 ```
 
-Worker 不保存：
+---
+
+# 93. Security
+
+SSH：
 
 ```text
-服务器 private key
+专用 worker key
 ```
 
-所有 Volume 操作由服务器主动：
+路径：
 
 ```text
-push
-pull
+~/.local/share/cbox/keys/
 ```
-
-SSH Key：
-
-```text
-专用 Ed25519
-```
-
-不是服务器日常登录 key。
 
 权限：
 
-```bash
-chmod 600
+```text
+0600
 ```
 
 ---
 
-# 65. Secret 支持
+# 94. Worker 不保存 server credential
 
-不要把：
+传输永远：
 
 ```text
-API_KEY
-TOKEN
-PASSWORD
+Server
+主动 push/pull
+Colab
 ```
 
-写进 Cboxfile。
+而不是：
 
-支持：
+```text
+Colab
+SSH 回 server
+```
+
+这非常重要。
+
+---
+
+# 95. Secret management
+
+MVP：
 
 ```bash
 cbox run \
-    --secret HF_TOKEN \
-    ...
+  --secret HF_TOKEN \
+  ...
 ```
 
-服务器：
+CBox 从当前环境：
 
 ```text
-~/.config/cbox/secrets/
+HF_TOKEN
 ```
 
-Worker 运行时注入：
+读取。
+
+传给远程：
 
 ```text
-environment
+environment variable
 ```
 
 Container 结束后清理。
 
 ---
 
-# 66. CLI 完整设计
+# 96. Secret 禁止写 DB 明文
 
-第一阶段主要命令：
-
-```text
-cbox build
-cbox images
-cbox rmi
-
-cbox create
-cbox run
-cbox start
-cbox stop
-cbox restart
-cbox rm
-
-cbox ps
-cbox inspect
-cbox logs
-cbox exec
-cbox cp
-cbox stats
-
-cbox volume create
-cbox volume ls
-cbox volume inspect
-cbox volume rm
-
-cbox context create
-cbox context ls
-cbox context use
-cbox context rm
-
-cbox compose up
-cbox compose ps
-cbox compose logs
-cbox compose down
-
-cbox system info
-cbox version
-```
-
----
-
-# 67. `cbox run` 参数
+DB 只保存：
 
 ```text
---name
--d / --detach
--it / --interactive
---gpu
---high-mem
--v / --volume
---mount
--e / --env
---env-file
---secret
--w / --workdir
---restart
---resume-command
---context
---rm
-```
-
-示例：
-
-```bash
-cbox run -d \
-    --name potsdam-mask2former \
-    --gpu L4,T4 \
-    --high-mem \
-    -v /data/Potsdam:/data:ro \
-    -v ./runs/mask2former:/output:output \
-    -e DATA_ROOT=/data \
-    --restart unless-stopped \
-    --resume-command \
-      "python tools/train.py configs/m2f.py --resume" \
-    mmseg:latest \
-    python tools/train.py configs/m2f.py
-```
-
----
-
-# 68. Config
-
-```yaml
-engine:
-  state_dir: ~/.local/share/cbox
-
-runtime:
-  idle_timeout: 1800
-
-sync:
-  output_interval: 600
-  transfer: auto
-
-ssh:
-  control_persist: 600
-
-scheduler:
-  gpu_fallback: true
-
-recovery:
-  enabled: true
-  max_attempts: 3
-```
-
----
-
-# 69. 开发顺序
-
-## Milestone 0：Colab Transport PoC
-
-完成：
-
-```text
-new
-ssh proxy
-ssh command
-rsync
-stop
-```
-
-测试：
-
-```bash
-cbox-dev new --gpu T4
-
-cbox-dev exec nvidia-smi
-
-cbox-dev push ./test /content/test
-```
-
-目标：
-
-```text
-证明底层通信稳定
-```
-
----
-
-## Milestone 1：无 daemon 的 `cbox run`
-
-实现：
-
-```text
-ImageSpec
-ContainerSpec
-ColabProvider
-SSHTransport
-rsync
-tmux
-```
-
-支持：
-
-```bash
-cbox run
-cbox ps
-cbox logs
-cbox exec
-cbox stop
-```
-
-此时可直接投入个人使用。
-
----
-
-## Milestone 2：cboxd
-
-拆成：
-
-```text
-Client
-Daemon
-```
-
-实现：
-
-```text
-Unix socket API
-SQLite
-background monitor
-```
-
-CLI 可以随时退出。
-
----
-
-## Milestone 3：Volume
-
-实现：
-
-```text
-ro
-rw
-output
-cache
-named volume
-manifest
-```
-
-这是科研实际可用性的关键里程碑。
-
----
-
-## Milestone 4：Image
-
-实现：
-
-```text
-Cboxfile parser
-build
-image hash
-runtime materialization
-image cache
-```
-
----
-
-## Milestone 5：Recovery
-
-实现：
-
-```text
-runtime lost detection
-output checkpoint persistence
-new runtime
-restore
-resume_command
-```
-
----
-
-## Milestone 6：多账户与 Context
-
-实现：
-
-```text
-profile isolation
-context
-automatic fallback
-```
-
----
-
-## Milestone 7：Compose
-
-支持：
-
-```text
-multiple experiments
-queue
-runtime reuse
-dataset affinity
-```
-
----
-
-# 70. 第一版不要做的事情
-
-不要：
-
-```text
-自己实现 Container runtime
-
-真的运行 Docker daemon inside Colab
-
-尝试 OCI filesystem layers
-
-自己实现 SSH protocol
-
-自己逆向 Colab backend API
-
-先开发 Web UI
-
-先开发 Kubernetes scheduler
-
-先做复杂分布式数据库
-```
-
-CBox 的价值来自：
-
-```text
-抽象
-生命周期管理
-状态持久化
-同步
-恢复
-```
-
-而不是重新造底层。
-
----
-
-# 71. Testing
-
-需要四层测试。
-
-## Unit
-
-测试：
-
-```text
-Cboxfile parser
-hash
-state transition
-CLI parser
-scheduler
-volume manifest
-```
-
-全部 mock。
-
----
-
-## Provider Integration
-
-真实执行：
-
-```text
-colab new
-colab status
-colab stop
-```
-
-但不跑训练。
-
----
-
-## Transport Integration
-
-真实：
-
-```text
-SSH
-rsync
-exec
-cp
-```
-
----
-
-## End-to-End
-
-使用小型 PyTorch：
-
-```python
-for epoch in range(20):
-    train()
-    save_checkpoint()
-```
-
-测试：
-
-```text
-run
-↓
-logs
-↓
-cp
-↓
-人工 stop Runtime
-↓
-recovery
-↓
-resume
-↓
-success
-```
-
----
-
-# 72. E2E 验收场景
-
-V1 发布前必须成功：
-
-```text
-01 build image
-
-02 run T4 container
-
-03 mount 1GB volume
-
-04 command starts
-
-05 CLI exits
-
-06 daemon continues monitoring
-
-07 logs -f works
-
-08 exec bash works
-
-09 stats works
-
-10 output appears on server
-
-11 forcibly terminate Colab Runtime
-
-12 daemon detects LOST
-
-13 new runtime allocated
-
-14 image restored
-
-15 volume restored
-
-16 checkpoint restored
-
-17 command resumes
-
-18 training finishes
-
-19 exit code recorded
-
-20 output completely synchronized
-
-21 stop/rm works
-
-22 daemon restart does not lose container state
-```
-
----
-
-# 73. 性能指标
-
-建议测试：
-
-```text
-Runtime provision latency
-
-SSH setup latency
-
-Image materialization latency
-
-dataset transfer throughput
-
-output sync latency
-
-recovery time
-
-daemon CPU/RAM
-```
-
-重点目标：
-
-```text
-cache hit 时启动新实验
-尽可能控制在几十秒级
-```
-
-而不是每个实验重新：
-
-```text
-下载数据
-pip install
-```
-
----
-
-# 74. 针对遥感科研的数据设计
-
-你的场景典型：
-
-```text
-Dataset
-  20~100GB
-
-Code
-  <1GB
-
-Checkpoint
-  0.5~5GB
-
-Logs
-  MB级
-```
-
-因此最优策略：
-
-```text
-Dataset
-→ named immutable ro volume
-
-Code
-→ 每次 run 增量 rsync
-
-Image
-→ runtime cache
-
-Checkpoint
-→ output volume
-
-Log
-→ continuous persistence
+secret names
 ```
 
 例如：
 
-```bash
-cbox volume create \
-    --source /data/Potsdam_512 \
-    --immutable \
-    potsdam
+```json
+[
+  "HF_TOKEN"
+]
 ```
 
-以后几十个实验共享。
+不保存：
+
+```text
+实际 token
+```
 
 ---
 
-# 75. 你的实际工作流
+# 97. systemd
 
-建立：
+安装：
 
 ```text
-WWTP/
-├── Cboxfile
-├── cbox-compose.yaml
-├── configs/
-├── mmseg/
-└── scripts/
+~/.config/systemd/user/cboxd.service
 ```
 
-Cboxfile：
+例如：
 
-```dockerfile
-FROM colab/python:3
+```ini
+[Unit]
+Description=CBox Runtime Engine
+After=network-online.target
 
-APT git
-APT rsync
-APT libgl1
+[Service]
+ExecStart=/usr/local/bin/cboxd
+Restart=on-failure
 
-COPY requirements_colab.txt /tmp/
-
-RUN pip install -r /tmp/requirements_colab.txt
-
-WORKDIR /workspace
+[Install]
+WantedBy=default.target
 ```
 
-构建：
+---
+
+# 98. cboxd 生命周期
+
+启动：
+
+```text
+load config
+↓
+open DB
+↓
+migrate
+↓
+load providers
+↓
+reconcile state
+↓
+start monitor loops
+↓
+start HTTP Unix server
+```
+
+关闭：
+
+```text
+SIGTERM
+↓
+cancel daemon context
+↓
+stop background goroutines
+↓
+flush DB
+↓
+close socket
+```
+
+不应该：
+
+```text
+自动 stop 所有 Colab runtimes
+```
+
+否则 daemon restart 会杀实验。
+
+---
+
+# 99. Graceful Shutdown
+
+```go
+ctx, cancel := signal.NotifyContext(
+    context.Background(),
+    syscall.SIGINT,
+    syscall.SIGTERM,
+)
+defer cancel()
+```
+
+所有 background loop 都监听：
+
+```go
+ctx.Done()
+```
+
+---
+
+# 100. Testing Strategy
+
+四层。
+
+## Unit Tests
+
+完全不调用：
+
+```text
+Colab
+SSH
+```
+
+测试：
+
+```text
+state machine
+scheduler
+Cboxfile parser
+hashing
+volume manifest
+config
+API handlers
+```
+
+---
+
+# 101. Mock Provider
+
+```go
+type FakeProvider struct {
+    ...
+}
+```
+
+可以：
+
+```text
+CreateRuntime成功
+GPU allocation fail
+Runtime lost
+```
+
+模拟。
+
+---
+
+# 102. Fake Transport
+
+模拟：
+
+```text
+exec
+copy
+sync
+```
+
+用于测试：
+
+```text
+ContainerService
+RecoveryService
+```
+
+---
+
+# 103. Integration Tests
+
+真实：
+
+```text
+sqlite
+Unix socket
+subprocess
+```
+
+但 mock Colab。
+
+---
+
+# 104. Provider Integration
+
+单独标记：
+
+```go
+//go:build integration_colab
+```
+
+运行：
 
 ```bash
-cbox build -t wwtp:mmseg .
+go test \
+  -tags integration_colab \
+  ./internal/provider/colab/...
 ```
 
-数据：
+会真实消费 Colab 资源。
 
-```bash
-cbox volume create \
-    --source /data/WWTP_v2_512 \
-    --immutable \
-    wwtp-v2
+不能默认 CI 执行。
+
+---
+
+# 105. E2E
+
+最重要：
+
+```text
+cbox build
+↓
+cbox run T4
+↓
+copy 100MB test dataset
+↓
+execute PyTorch test
+↓
+logs
+↓
+stats
+↓
+output
+↓
+stop
 ```
+
+---
+
+# 106. Recovery E2E
 
 训练：
 
-```bash
-cbox run -d \
-    --name full \
-    --gpu L4,T4 \
-    --mount source=wwtp-v2,target=/data,mode=ro \
-    -v ./runs/full:/output:output \
-    wwtp:mmseg \
-    python tools/train.py \
-        configs/full.py \
-        --work-dir /output
+```text
+epoch 1
+epoch 2
+epoch 3
 ```
 
-以后：
+然后主动：
 
 ```bash
-cbox ps
+colab stop
 ```
 
-```bash
-cbox logs -f full
-```
+预期：
 
-```bash
-cbox exec -it full bash
+```text
+CBox detects LOST
+↓
+container interrupted
+↓
+new runtime
+↓
+restore
+↓
+resume
 ```
 
 ---
 
-# 76. 双账户
+# 107. CI
+
+GitHub Actions：
+
+```text
+go fmt
+go vet
+go test
+go build
+```
+
+matrix：
+
+```text
+linux amd64
+linux arm64
+```
+
+第一阶段实际运行平台：
+
+```text
+Linux
+```
+
+即可。
+
+---
+
+# 108. Cross Compile
+
+```bash
+CGO_ENABLED=0 \
+GOOS=linux \
+GOARCH=amd64 \
+go build ./cmd/cbox
+```
+
+以及：
+
+```bash
+go build ./cmd/cboxd
+```
+
+因为：
+
+```text
+modernc sqlite
+```
+
+可避免 CGO。
+
+---
+
+# 109. Release
 
 最终：
 
 ```text
-                 cboxd
-                   │
-            Internal Scheduler
-             ┌─────┴─────┐
-             ▼           ▼
-         Context A   Context B
-             │           │
-         Colab A     Colab B
-             │           │
-         T4/L4       T4/L4
+cbox_linux_amd64.tar.gz
+
+cbox
+cboxd
 ```
 
-运行两个实验：
+安装：
+
+```bash
+sudo install cbox /usr/local/bin/
+sudo install cboxd /usr/local/bin/
+```
+
+---
+
+# 110. Makefile
+
+建议：
+
+```make
+build:
+	go build -o bin/cbox ./cmd/cbox
+	go build -o bin/cboxd ./cmd/cboxd
+
+test:
+	go test ./...
+
+fmt:
+	go fmt ./...
+
+vet:
+	go vet ./...
+
+install:
+	go install ./cmd/cbox
+	go install ./cmd/cboxd
+```
+
+---
+
+# 111. 开发阶段
+
+## Phase 0 — Transport PoC
+
+只写：
+
+```text
+internal/provider/colab
+internal/transport
+```
+
+做到：
+
+```bash
+go run ./cmd/cbox-dev new --gpu T4
+
+go run ./cmd/cbox-dev exec nvidia-smi
+
+go run ./cmd/cbox-dev sync ./test /content/test
+
+go run ./cmd/cbox-dev stop
+```
+
+先证明：
+
+```text
+Go
+↓
+colab CLI
+↓
+SSH Proxy
+↓
+rsync
+```
+
+整个链稳定。
+
+---
+
+# 112. Phase 1 — Container MVP
+
+实现：
+
+```text
+Container model
+Container service
+Runtime service
+ColabProvider
+SSHTransport
+tmux runner
+```
+
+用户可：
+
+```bash
+cbox run
+
+cbox ps
+
+cbox logs
+
+cbox exec
+
+cbox stop
+```
+
+这个阶段暂时：
+
+```text
+CLI 直接调用 Engine
+```
+
+甚至可以暂时没有 daemon。
+
+---
+
+# 113. Phase 2 — Daemon
+
+加入：
+
+```text
+cboxd
+Unix socket
+REST API
+SQLite
+```
+
+将：
+
+```text
+CLI
+```
+
+和：
+
+```text
+Engine
+```
+
+解耦。
+
+这是架构正式成型阶段。
+
+---
+
+# 114. Phase 3 — Volume
+
+实现：
+
+```text
+-v
+
+ro
+rw
+output
+
+rsync
+
+volume manifest
+
+cache
+```
+
+完成后才真正适合遥感训练。
+
+---
+
+# 115. Phase 4 — Image
+
+实现：
+
+```text
+Cboxfile
+build
+images
+materialize
+cache
+```
+
+在这之前可以：
+
+```text
+直接 bootstrap command
+```
+
+不用阻塞前期。
+
+---
+
+# 116. Phase 5 — Runtime Pool
+
+加入：
+
+```text
+idle Runtime
+reuse
+cache affinity
+idle timeout
+```
+
+显著降低：
+
+```text
+dataset transfer
+pip install
+```
+
+次数。
+
+---
+
+# 117. Phase 6 — Recovery
+
+实现：
+
+```text
+health monitor
+runtime lost
+restart policy
+resume command
+checkpoint restore
+```
+
+---
+
+# 118. Phase 7 — Context / Multi-account
+
+加入：
+
+```text
+colab-a
+colab-b
+colab-pool
+```
+
+自动调度。
+
+---
+
+# 119. Phase 8 — Compose
+
+最后：
 
 ```bash
 cbox compose up -d
 ```
 
-CBox 自动调度。
+支持大规模：
+
+```text
+baseline
+ablation
+public dataset experiments
+```
 
 ---
 
-# 77. Provider 可扩展设计
+# 120. MVP 第一版明确范围
 
-未来：
-
-```text
-CBox
- │
- ├── ColabProvider
- ├── SSHProvider
- ├── RunPodProvider
- ├── GCPProvider
- └── LocalProvider
-```
-
-甚至：
-
-```bash
-cbox run \
-    --context runpod \
-    mmseg \
-    python train.py
-```
-
-用户 API 不变。
-
-这也是为什么：
+第一版必须有：
 
 ```text
+Go
+
+ColabProvider
+
+SSHTransport
+
+rsync
+
 Container
-```
-
-不能直接等价为：
-
-```text
-ColabSession
-```
-
-两者必须解耦。
-
----
-
-# 78. 推荐的 MVP 边界
-
-真正适合第一版发布的功能：
-
-```text
-cboxd
-
-cbox build
-cbox images
 
 cbox run
 cbox ps
 cbox logs
 cbox exec
-cbox cp
 cbox stop
 cbox rm
 
-cbox volume
-
-单账户
-
-T4/L4 GPU
-
-SSH transport
-
-rsync
-
-tmux
-
 SQLite
+
+cboxd
+
+output sync
 ```
 
-先不要实现：
+暂时不要：
 
 ```text
+Cboxfile完整实现
+
 Compose
-自动多账户
-Web UI
-A100/H100调度
-复杂 recovery
-provider marketplace
-```
-
----
-
-# 79. 第二版
-
-加入：
-
-```text
-start
-restart
-restart policy
-
-automatic recovery
-
-named cache volumes
-
-GPU fallback
-
-multi-account contexts
-
-runtime pool
-```
-
----
-
-# 80. 第三版
-
-加入：
-
-```text
-Compose
-
-experiment queue
 
 multi-account scheduler
 
-dataset affinity
+auto recovery
 
-image affinity
-
-TUI / Web dashboard
+Web UI
 ```
 
 ---
 
-# 81. 最终产品心智模型
+# 121. 第一版验收
 
-用户永远只看到：
-
-```text
-Cboxfile
-       ↓
-    Image
-       ↓
-cbox run
-       ↓
- Container
-       │
-       ├── Volume
-       └── GPU
-```
-
-Engine 内部才是：
+必须完整完成：
 
 ```text
-Container
-   ↓
-Scheduler
-   ↓
-Runtime
-   ↓
-Colab Provider
-   ↓
-google-colab-cli
-   ↓
-WebSocket SSH
-   ↓
-Colab VM
+1 cboxd 启动
+
+2 cbox run --gpu T4 ubuntu-style command
+
+3 自动创建 Colab Runtime
+
+4 SSH Ready
+
+5 项目目录同步
+
+6 训练进程启动
+
+7 cbox 命令退出
+
+8 远程训练继续
+
+9 cbox ps 显示 RUNNING
+
+10 cbox logs -f 正常
+
+11 cbox exec -it bash 正常
+
+12 cbox stats 正常
+
+13 output 周期同步到服务器
+
+14 训练退出
+
+15 ExitCode 正确
+
+16 Runtime 进入 idle
+
+17 第二个 Container 复用 Runtime
+
+18 cbox stop 正常
+
+19 cbox rm 正常
+
+20 daemon restart 后状态不丢失
 ```
 
-这层隔离是整个项目最重要的架构决策。
+完成这 20 项：
+
+```text
+CBox V0.1
+```
+
+就已经具备实际科研使用价值。
 
 ---
 
-# 82. 开发优先级
+# 122. V0.2 验收
 
-P0：
-
-```text
-ColabProvider
-SSHTransport
-Container
-run
-exec
-logs
-stop
-```
-
-P1：
+增加：
 
 ```text
-daemon
-SQLite
-Volume
-cp
-stats
 Image
+Volume cache
+start
+restart
 ```
 
-P2：
+---
+
+# 123. V0.3 验收
+
+增加：
 
 ```text
-restart
-recovery
-cache
-context
+runtime failure recovery
+
+resume
+
 multi-account
 ```
 
-P3：
+---
+
+# 124. V0.4
+
+增加：
 
 ```text
-compose
-scheduler
-provider extensions
-dashboard
+Compose
+```
+
+到这里基本形成完整 Docker-like 产品。
+
+---
+
+# 125. 推荐开发顺序
+
+不要先：
+
+```text
+Cboxfile parser
+Compose
+漂亮 CLI
+```
+
+真正应该：
+
+```text
+1 Provider
+
+2 SSH Transport
+
+3 Runtime
+
+4 Remote Process
+
+5 Container
+
+6 Persistent State
+
+7 Daemon
+
+8 Volume
+
+9 Image
+
+10 Recovery
+
+11 Scheduler
+
+12 Compose
 ```
 
 ---
 
-# 83. 核心判断
+# 126. 第一批 Go 文件
 
-这个工具不应该被设计成：
-
-```text
-“Colab CLI Wrapper”
-```
-
-也不应该只是：
+真正开始写代码时建议第一批只创建：
 
 ```text
-“科研任务调度器”
+cmd/
+├── cbox/
+│   └── main.go
+└── cboxd/
+    └── main.go
+
+internal/
+├── provider/
+│   ├── provider.go
+│   └── colab/
+│       ├── provider.go
+│       └── cli.go
+│
+├── transport/
+│   ├── transport.go
+│   └── ssh.go
+│
+├── runtime/
+│   ├── model.go
+│   └── service.go
+│
+├── container/
+│   ├── model.go
+│   ├── state.go
+│   └── service.go
+│
+└── errors/
+    └── errors.go
 ```
 
-正确定位应该是：
+先不要把 50 个文件全部空着创建出来。
 
-> **CBox 是一个面向 Ephemeral GPU Compute 的 Docker-like Runtime Engine，Colab 是第一个 Provider。**
+---
 
-这样既能解决你当前：
+# 127. 第一阶段核心接口
+
+只需要先稳定四个：
+
+```go
+Provider
+
+Transport
+
+RuntimeService
+
+ContainerService
+```
+
+关系：
 
 ```text
-远程服务器
-+
-Colab GPU
-+
-大量遥感数据
-+
-深度学习训练
-+
-消融实验
+ContainerService
+       │
+       ▼
+RuntimeService
+       │
+       ▼
+Provider
+       │
+       ▼
+Transport
 ```
 
-的问题，同时架构不会被 Colab 本身锁死。
+---
+
+# 128. 最重要的 Go 架构原则
+
+整个工程要始终遵守：
+
+```text
+cmd
+ ↓
+service
+ ↓
+domain/interface
+ ↓
+infrastructure
+```
+
+不要出现：
+
+```text
+Cobra command
+直接执行 colab CLI
+
+API handler
+直接执行 rsync
+
+Container model
+依赖 SQLite
+
+Scheduler
+解析 shell 输出
+```
+
+这些都会让项目后期迅速失控。
+
+---
+
+# 129. 最终推荐架构
+
+```text
+                  cbox
+                   │
+                   ▼
+              Unix Socket
+                   │
+                   ▼
+                 cboxd
+                   │
+          ┌────────┼────────┐
+          ▼        ▼        ▼
+     Container   Image    Volume
+          │
+          ▼
+      Scheduler
+          │
+          ▼
+    RuntimeService
+          │
+          ▼
+       Provider
+          │
+          ▼
+     ColabProvider
+          │
+          ▼
+   google-colab-cli
+          │
+          ▼
+     SSHTransport
+          │
+          ▼
+       Colab VM
+```
+
+而永久状态：
+
+```text
+              Remote Server
+                   │
+        ┌──────────┼──────────┐
+        ▼          ▼          ▼
+      SQLite     Dataset     Runs
+```
+
+Colab 则始终：
+
+```text
+Disposable
+Rebuildable
+Cacheable
+```
+
+---
+
+# 130. 项目最终目标
+
+最终应该可以做到：
+
+```bash
+cbox build -t wwtp:mmseg .
+
+cbox volume create \
+  --source /data/WWTP \
+  wwtp
+
+cbox run -d \
+  --name rpgv-full \
+  --gpu L4,T4 \
+  --mount source=wwtp,target=/data,mode=ro \
+  -v ./runs/full:/output:output \
+  --restart unless-stopped \
+  --resume-command \
+  "python tools/train.py configs/full.py --resume" \
+  wwtp:mmseg \
+  python tools/train.py configs/full.py
+```
+
+之后：
+
+```bash
+cbox ps
+```
+
+看到：
+
+```text
+CONTAINER    IMAGE         GPU   STATUS      NAME
+7fe39bc2     wwtp:mmseg    L4    Up 3h       rpgv-full
+```
+
+而你完全不再关心：
+
+```text
+Colab 页面
+Notebook
+Runtime 创建
+SSH Proxy
+rsync
+tmux
+checkpoint 回传
+```
+
+这才是 CBox 作为 Docker-like 工具真正应该达到的抽象层级。
