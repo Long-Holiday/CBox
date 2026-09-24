@@ -37,6 +37,9 @@ vet:
 clean:
 	rm -rf bin dist
 
-install:
-	go install -ldflags="$(LDFLAGS)" ./cmd/cbox
-	go install -ldflags="$(LDFLAGS)" ./cmd/cboxd
+install: build-static
+	mkdir -p $(HOME)/.local/bin
+	cp bin/cbox $(HOME)/.local/bin/cbox
+	cp bin/cboxd $(HOME)/.local/bin/cboxd
+	@echo "Successfully installed cbox and cboxd to $(HOME)/.local/bin"
+
