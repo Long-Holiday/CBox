@@ -11,6 +11,8 @@ type Paths struct {
 	RuntimeDir  string
 	DBPath      string
 	SocketPath  string
+	PIDPath     string
+	LogFilePath string
 	KeysDir     string
 	ProfilesDir string
 	SSHDir      string
@@ -56,6 +58,8 @@ func ResolvePaths(customDataDir string) (*Paths, error) {
 		RuntimeDir:  runtimeDir,
 		DBPath:      filepath.Join(dataDir, "cbox.db"),
 		SocketPath:  filepath.Join(runtimeDir, "cbox.sock"),
+		PIDPath:     filepath.Join(runtimeDir, "cboxd.pid"),
+		LogFilePath: filepath.Join(dataDir, "logs", "cboxd.log"),
 		KeysDir:     filepath.Join(dataDir, "keys"),
 		ProfilesDir: filepath.Join(dataDir, "profiles"),
 		SSHDir:      filepath.Join(dataDir, "ssh"),

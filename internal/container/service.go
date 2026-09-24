@@ -16,6 +16,7 @@ import (
 	"cbox/internal/runtime"
 	"cbox/internal/transport"
 	"cbox/internal/volume"
+	"cbox/internal/worker"
 	pkgApi "cbox/pkg/api"
 	"github.com/google/uuid"
 )
@@ -505,11 +506,15 @@ func (s *Service) ensureWorkerBootstrap(ctx context.Context, trans transport.Tra
 	initDirs := "mkdir -p /content/.cbox/bin /content/.cbox/containers /content/.cbox/images /content/.cbox/volumes /content/.cbox/cache"
 	_, _ = trans.Exec(ctx, []string{"bash", "-c", initDirs}, transport.ExecOptions{})
 
-	// Copy worker scripts if they exist locally
-	for _, script := range []string{"entrypoint.sh", "bootstrap.sh", "health.sh"} {
-		localPath := filepath.Join("worker", script)
-		if _, err := os.Stat(localPath); err == nil {
-			_ = trans.CopyTo(ctx, localPath, fmt.Sprintf("/content/.cbox/bin/%s", script))
+	// Copy worker scripts (using embedded scripts if not found on disk)
+	for _, script := range worker.ListScripts() {
+		scriptData, err := worker.GetScript(script)
+		if err == nil && len(scriptData) > 0 {
+			tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("cbox-%s", script))
+			if err := os.WriteFile(tmpFile, scriptData, 0755); err == nil {
+				_ = trans.CopyTo(ctx, tmpFile, fmt.Sprintf("/content/.cbox/bin/%s", script))
+				_ = os.Remove(tmpFile)
+			}
 			_, _ = trans.Exec(ctx, []string{"chmod", "+x", fmt.Sprintf("/content/.cbox/bin/%s", script)}, transport.ExecOptions{})
 		}
 	}

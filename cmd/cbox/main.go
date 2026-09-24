@@ -11,15 +11,18 @@ import (
 
 	"cbox/internal/client"
 	"cbox/internal/config"
+	"cbox/internal/daemon"
+	"cbox/internal/doctor"
 	pkgApi "cbox/pkg/api"
 	"github.com/spf13/cobra"
 )
 
 var (
-	socketFlag string
-	formatFlag string
-	debugFlag  bool
-	cboxClient *client.Client
+	socketFlag    string
+	formatFlag    string
+	debugFlag     bool
+	autoStartFlag bool = true
+	cboxClient    *client.Client
 )
 
 func getClient() *client.Client {
@@ -37,6 +40,24 @@ func getClient() *client.Client {
 		}
 	}
 
+	// Auto-start daemon if requested and daemon is currently unreachable
+	if autoStartFlag {
+		opts := daemon.Options{
+			SocketPath: socketPath,
+			Debug:      debugFlag,
+		}
+		status, _ := daemon.Status(opts)
+		if status == nil || !status.Running {
+			fmt.Fprintln(os.Stderr, "CBox engine daemon is not running. Starting background engine...")
+			pid, err := daemon.StartBackground(opts)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to auto-start daemon: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "CBox daemon started successfully (PID: %d)\n", pid)
+			}
+		}
+	}
+
 	cboxClient = client.NewClient(socketPath)
 	return cboxClient
 }
@@ -51,6 +72,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&socketFlag, "socket", "s", "", "cboxd unix socket path")
 	rootCmd.PersistentFlags().StringVar(&formatFlag, "format", "table", "output format (table|json)")
 	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "enable verbose debug output")
+	rootCmd.PersistentFlags().BoolVar(&autoStartFlag, "autostart", true, "automatically start background daemon if not running")
 
 	// Subcommands
 	rootCmd.AddCommand(newRunCmd())
@@ -75,6 +97,9 @@ func main() {
 
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newEventsCmd())
+	rootCmd.AddCommand(newDaemonCmd())
+	rootCmd.AddCommand(newDoctorCmd())
+	rootCmd.AddCommand(newSetupCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -982,3 +1007,201 @@ func newEventsCmd() *cobra.Command {
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "Number of events to retrieve")
 	return cmd
 }
+
+// cbox daemon
+func newDaemonCmd() *cobra.Command {
+	var configPath string
+	var socketPath string
+	var tcpAddr string
+	var debug bool
+
+	daemonCmd := &cobra.Command{
+		Use:   "daemon",
+		Short: "Manage the CBox engine daemon",
+		Long:  "Run or manage the background CBox engine daemon that manages containers, runtimes, and storage.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	daemonCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "path to config file")
+	daemonCmd.PersistentFlags().StringVarP(&socketPath, "socket", "s", "", "override unix socket path")
+	daemonCmd.PersistentFlags().StringVar(&tcpAddr, "tcp", "", "optional TCP listen address (e.g. 127.0.0.1:8080)")
+	daemonCmd.PersistentFlags().BoolVar(&debug, "debug", false, "enable debug logging")
+
+	// cbox daemon run (foreground)
+	runCmd := &cobra.Command{
+		Use:   "run",
+		Short: "Run the CBox engine daemon in the foreground",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts := daemon.Options{
+				ConfigPath: configPath,
+				SocketPath: socketPath,
+				TCPAddr:    tcpAddr,
+				Debug:      debug || debugFlag,
+			}
+			return daemon.Run(context.Background(), opts)
+		},
+	}
+	daemonCmd.AddCommand(runCmd)
+
+	// cbox daemon start (background)
+	startCmd := &cobra.Command{
+		Use:   "start",
+		Short: "Start the CBox engine daemon in the background",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts := daemon.Options{
+				ConfigPath: configPath,
+				SocketPath: socketPath,
+				TCPAddr:    tcpAddr,
+				Debug:      debug || debugFlag,
+			}
+			pid, err := daemon.StartBackground(opts)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("CBox daemon started in background (PID: %d)\n", pid)
+			return nil
+		},
+	}
+	daemonCmd.AddCommand(startCmd)
+
+	// cbox daemon stop
+	stopCmd := &cobra.Command{
+		Use:   "stop",
+		Short: "Stop the running CBox engine daemon",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts := daemon.Options{
+				ConfigPath: configPath,
+				SocketPath: socketPath,
+			}
+			if err := daemon.Stop(opts); err != nil {
+				return err
+			}
+			fmt.Println("CBox daemon stopped")
+			return nil
+		},
+	}
+	daemonCmd.AddCommand(stopCmd)
+
+	// cbox daemon restart
+	restartCmd := &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the CBox engine daemon in the background",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts := daemon.Options{
+				ConfigPath: configPath,
+				SocketPath: socketPath,
+				TCPAddr:    tcpAddr,
+				Debug:      debug || debugFlag,
+			}
+			pid, err := daemon.Restart(opts)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("CBox daemon restarted in background (PID: %d)\n", pid)
+			return nil
+		},
+	}
+	daemonCmd.AddCommand(restartCmd)
+
+	// cbox daemon status
+	statusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show CBox engine daemon status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts := daemon.Options{
+				ConfigPath: configPath,
+				SocketPath: socketPath,
+			}
+			st, err := daemon.Status(opts)
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return PrintJSON(os.Stdout, st)
+			}
+			if st.Running {
+				fmt.Printf("Status:  Running\nPID:     %d\nSocket:  %s\nVersion: %s\n", st.PID, st.SocketPath, st.Version)
+			} else {
+				fmt.Printf("Status:  Stopped\nSocket:  %s\n", st.SocketPath)
+				if st.Error != "" {
+					fmt.Printf("Warning: %s\n", st.Error)
+				}
+			}
+			return nil
+		},
+	}
+	daemonCmd.AddCommand(statusCmd)
+
+	return daemonCmd
+}
+
+// cbox doctor
+func newDoctorCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check system environment and dependencies",
+		Long:  "Inspect dependencies (ssh, rsync, colab CLI, authentication, daemon) required by CBox.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			paths, _ := config.ResolvePaths("")
+			socket := socketFlag
+			if socket == "" && paths != nil {
+				socket = paths.SocketPath
+			}
+			rep := doctor.CheckEnvironment(daemon.Options{
+				SocketPath: socket,
+				Debug:      debugFlag,
+			})
+
+			if formatFlag == "json" {
+				return PrintJSON(os.Stdout, rep)
+			}
+
+			fmt.Println("CBox Environment Diagnosis:")
+			fmt.Println("----------------------------------------------------------------------")
+			for _, item := range rep.Items {
+				statusMark := "[\033[32m✔\033[0m]"
+				if !item.Installed {
+					statusMark = "[\033[31m✖\033[0m]"
+				}
+				fmt.Printf("%s %-22s : ", statusMark, item.Name)
+				if item.Installed {
+					if item.Version != "" {
+						fmt.Printf("%s\n", item.Version)
+					} else {
+						fmt.Printf("OK\n")
+					}
+				} else {
+					fmt.Printf("NOT FOUND\n")
+					if item.FixHint != "" {
+						fmt.Printf("    -> Hint: %s\n", item.FixHint)
+					}
+				}
+			}
+			fmt.Println("----------------------------------------------------------------------")
+			if rep.AllGood {
+				fmt.Println("All required dependencies are satisfied! CBox is ready to use.")
+			} else {
+				fmt.Println("Some dependencies are missing. Run 'cbox setup' to configure Colab automatically.")
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+// cbox setup
+func newSetupCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Automatically install Colab CLI dependencies and authenticate",
+		Long:  "Setup uv, google-colab-cli with jupyter-kernel-client, and trigger Google account authentication.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return doctor.SetupDependencies(context.Background())
+		},
+	}
+	return cmd
+}
+
+
