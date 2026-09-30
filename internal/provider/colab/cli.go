@@ -145,3 +145,7 @@ func (c *ColabCLI) Stop(ctx context.Context, session string) (*CommandResult, er
 	args := []string{"stop", "-s", session}
 	return c.Runner.Run(ctx, c.Binary, c.buildArgs(args...), c.buildOptions())
 }
+
+func (c *ColabCLI) DriveMount(ctx context.Context, session string) (*CommandResult, error) {
+	return c.Runner.Run(ctx, c.Binary, c.buildArgs("drivemount", "-s", session, "/content/drive"), c.buildOptions())
+}

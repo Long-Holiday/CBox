@@ -44,8 +44,12 @@ func (s *Service) SyncManager() *SyncManager {
 }
 
 func ParseMountSpec(spec string) (*Mount, error) {
+	cloud := strings.HasPrefix(spec, GoogleDrivePrefix)
+	if cloud {
+		spec = strings.TrimPrefix(spec, GoogleDrivePrefix)
+	}
 	parts := strings.Split(spec, ":")
-	if len(parts) < 2 {
+	if len(parts) < 2 || len(parts) > 3 || parts[0] == "" || parts[1] == "" {
 		return nil, fmt.Errorf("invalid volume mount spec: %q (expected source:target[:mode])", spec)
 	}
 
@@ -66,6 +70,13 @@ func ParseMountSpec(spec string) (*Mount, error) {
 		default:
 			return nil, fmt.Errorf("invalid volume mode: %q (expected ro, rw, output, or cache)", parts[2])
 		}
+	}
+
+	if cloud {
+		if err := ValidateGoogleDriveMount(source, target, mode); err != nil {
+			return nil, err
+		}
+		return &Mount{Source: GoogleDrivePrefix + source, Target: target, Mode: mode}, nil
 	}
 
 	absSource, err := filepath.Abs(source)
@@ -135,6 +146,12 @@ func (s *Service) DeleteVolume(ctx context.Context, idOrName string) error {
 
 func (s *Service) PrepareMounts(ctx context.Context, trans transport.Transport, mounts []Mount, cachedVolumes map[string]string) error {
 	for i, mnt := range mounts {
+		if IsGoogleDriveMount(mnt) {
+			if err := prepareGoogleDriveMount(ctx, trans, mnt); err != nil {
+				return err
+			}
+			continue
+		}
 		// Ensure local source exists if read-only or read-write
 		if mnt.Mode == ModeReadOnly || mnt.Mode == ModeReadWrite {
 			if _, err := os.Stat(mnt.Source); err != nil {

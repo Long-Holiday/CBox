@@ -190,3 +190,19 @@ func (s *Service) UpdateCache(ctx context.Context, id string, cache RuntimeCache
 	}
 	return nil
 }
+
+// EnsureGoogleDrive uses the provider's notebook authentication channel, which
+// is unavailable to an ordinary SSH Python process.
+func (s *Service) EnsureGoogleDrive(ctx context.Context, rt *Runtime) error {
+	p, err := s.GetProvider(rt.Provider)
+	if err != nil {
+		return err
+	}
+	driveProvider, ok := p.(interface {
+		EnsureGoogleDrive(context.Context, *Runtime) error
+	})
+	if !ok {
+		return fmt.Errorf("provider %s does not support Google Drive mounts", p.Name())
+	}
+	return driveProvider.EnsureGoogleDrive(ctx, rt)
+}

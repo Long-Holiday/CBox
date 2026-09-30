@@ -372,6 +372,41 @@ services:
       - nvidia-smi
 ```
 
+### Google Drive persistent storage
+
+Declare cloud storage in a service's `volumes`. Sources are paths relative to
+`/content/drive`, such as `MyDrive/datasets` or `Shareddrives/Team/datasets`.
+
+```yaml
+    volumes:
+      - type: google-drive
+        source: MyDrive/datasets
+        target: /data
+        mode: ro
+      - type: google-drive
+        source: MyDrive/cbox/runs
+        target: /output
+        mode: rw
+```
+
+CBox uses Colab CLI `drivemount` to mount Drive once per runtime, then bind-mounts
+these paths before launching the service. `ro` (the default) makes the target
+read-only; `rw` writes directly to Drive. Both directories and individual files
+are supported, and sources must already exist. Cloud volumes skip local rsync,
+hashing and output synchronization; `output` and `cache` modes are rejected.
+Drive data persists after the runtime stops or `compose down`. Bind targets
+remain on a reused runtime, so services sharing a target must use the same source
+and mode. Read-only access applies to the target, not the runtime's entire Drive.
+
+First-time Google Drive consent may require a browser. If startup fails, run the
+profile-aware `colab ... drivemount -s <session> /content/drive` command shown in
+the error from your terminal, complete consent, and retry `cbox compose up -d`.
+Automatic mount attempts time out after 90 seconds. Drive authentication runs
+through the Colab notebook channel rather than SSH Python.
+
+The equivalent short syntax is `gdrive://MyDrive/datasets:/data:ro`, also accepted
+by `cbox run -v`. See [the complete Drive example](examples/cbox-compose.gdrive.yaml).
+
 ### Compose Commands
 
 ```bash

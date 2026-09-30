@@ -1,6 +1,7 @@
 package compose
 
 type VolumeSpec struct {
+	Type   string `yaml:"type,omitempty"`
 	Source string `yaml:"source"`
 	Target string `yaml:"target"`
 	Mode   string `yaml:"mode"`

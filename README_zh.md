@@ -376,6 +376,40 @@ services:
       - nvidia-smi
 ```
 
+### Google Drive 云端持久化存储
+
+在服务的 `volumes` 中声明 Google Drive 挂载。`source` 是相对于
+`/content/drive` 的路径，例如 `MyDrive/datasets` 或
+`Shareddrives/团队名/datasets`。
+
+```yaml
+    volumes:
+      - type: google-drive
+        source: MyDrive/datasets
+        target: /data
+        mode: ro
+      - type: google-drive
+        source: MyDrive/cbox/runs
+        target: /output
+        mode: rw
+```
+
+CBox 使用 Colab CLI 的 `drivemount` 在运行时中挂载 Drive，并在启动服务前将
+源路径绑定到 `target`。`ro` 为默认模式，目标路径只读；`rw` 的修改直接写入
+Drive。支持目录和单个文件，源路径必须提前存在。云端卷不执行本地 rsync、
+内容哈希或输出回传，不支持 `output` 和 `cache` 模式。运行时停止或执行
+`compose down` 后，Drive 中的数据仍保留。复用运行时会保留绑定目标，多个服务
+使用相同目标时应声明相同的源路径和模式。只读限制作用于目标路径，不作用于
+整个运行时的 Drive。
+
+首次挂载可能需要浏览器授权。启动失败时，在终端执行错误提示中的完整
+`colab ... drivemount -s <session> /content/drive` 命令（会包含当前运行时对应的
+profile 配置），完成授权后重试 `cbox compose up -d`。自动挂载尝试最多等待
+90 秒。授权通过 Colab notebook 通道完成。
+
+也支持短格式 `gdrive://MyDrive/datasets:/data:ro`，可用于 `cbox run -v`。
+完整示例见 [cbox-compose.gdrive.yaml](examples/cbox-compose.gdrive.yaml)。
+
 ### Compose 管理命令
 
 ```bash

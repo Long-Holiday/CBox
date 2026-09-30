@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	cboxErr "cbox/internal/errors"
@@ -254,4 +255,39 @@ func (p *ColabProvider) OpenTransport(ctx context.Context, rt *runtime.Runtime) 
 	sshConfigFile := filepath.Join(p.sshDir, rt.Session+".conf")
 	host := rt.Session
 	return transport.NewSSHTransport(host, sshConfigFile, p.logger), nil
+}
+
+func (p *ColabProvider) EnsureGoogleDrive(ctx context.Context, rt *runtime.Runtime) error {
+	trans, err := p.OpenTransport(ctx, rt)
+	if err != nil {
+		return err
+	}
+	mounted := func() bool {
+		res, err := trans.Exec(ctx, []string{"mountpoint", "-q", "/content/drive"}, transport.ExecOptions{})
+		return err == nil && res != nil && res.ExitCode == 0
+	}
+	if mounted() {
+		return nil
+	}
+	cli, _, err := p.getCLI(rt.Profile)
+	if err != nil {
+		return err
+	}
+	// A daemon cannot complete a first-time browser consent ceremony. Bound the
+	// attempt and return an actionable command using the runtime's own profile.
+	mountCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	res, runErr := cli.DriveMount(mountCtx, rt.Session)
+	if runErr == nil && res != nil && res.ExitCode == 0 && mounted() {
+		return nil
+	}
+	command := transport.ShellCommand(append([]string{p.binary}, cli.buildArgs("drivemount", "-s", rt.Session, "/content/drive")...))
+	if cli.Profile.HomeDir != "" {
+		command = transport.ShellCommand([]string{"env", "HOME=" + cli.Profile.HomeDir}) + " " + command
+	}
+	detail := ""
+	if res != nil {
+		detail = strings.TrimSpace(string(res.Stdout) + "\n" + string(res.Stderr))
+	}
+	return fmt.Errorf("Google Drive mount failed (%v): %s; complete Drive authorization in a terminal with: %s, then retry start", runErr, detail, command)
 }

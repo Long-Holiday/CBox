@@ -217,7 +217,19 @@ func (s *Service) StartContainer(ctx context.Context, idOrName string, detach bo
 		}
 	}
 
-	// 7. Prepare and sync volume mounts
+	// 7. Authenticate and mount cloud storage before preparing service targets.
+	for _, mnt := range c.Mounts {
+		if volume.IsGoogleDriveMount(mnt) {
+			if err := s.runtimeService.EnsureGoogleDrive(ctx, rt); err != nil {
+				s.runtimeService.Pool().MarkIdle(rt.ID)
+				_ = Transition(c, StateFailed)
+				_ = s.repo.UpdateState(ctx, c.ID, StateFailed)
+				return nil, fmt.Errorf("prepare Google Drive: %w", err)
+			}
+			break
+		}
+	}
+	// Prepare and sync volume mounts
 	if len(c.Mounts) > 0 && s.volumeService != nil {
 		if err := s.volumeService.PrepareMounts(ctx, trans, c.Mounts, rt.Cache.Volumes); err != nil {
 			_ = Transition(c, StateFailed)

@@ -128,6 +128,7 @@ func TestColabProfileCommands(t *testing.T) {
 		call func() (*CommandResult, error)
 	}{
 		{[]string{"new", "-s", "my-sess"}, func() (*CommandResult, error) { return cli.New(context.Background(), "my-sess", "", false) }},
+		{[]string{"drivemount", "-s", "my-sess", "/content/drive"}, func() (*CommandResult, error) { return cli.DriveMount(context.Background(), "my-sess") }},
 		{[]string{"status", "-s", "my-sess"}, func() (*CommandResult, error) { return cli.Status(context.Background(), "my-sess") }},
 		{[]string{"status"}, func() (*CommandResult, error) { return cli.Status(context.Background(), "") }},
 		{[]string{"sessions"}, func() (*CommandResult, error) { return cli.Sessions(context.Background()) }},

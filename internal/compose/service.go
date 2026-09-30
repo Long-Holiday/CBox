@@ -47,7 +47,10 @@ func (s *Service) Up(ctx context.Context, composeFile string, detach bool) ([]*c
 	for svcName, svc := range cfg.Services {
 		containerName := fmt.Sprintf("%s-%s", projectName, svcName)
 		gpuPref := ExtractGPUPreferences(svc.GPU)
-		volSpecs := ExtractVolumeSpecs(svc.Volumes)
+		volSpecs, err := ParseVolumeSpecs(svc.Volumes)
+		if err != nil {
+			return nil, fmt.Errorf("service %s: %w", svcName, err)
+		}
 
 		s.logger.Info("compose: bringing up service", "service", svcName, "container", containerName)
 

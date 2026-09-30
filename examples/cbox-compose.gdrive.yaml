@@ -1,0 +1,20 @@
+version: "1"
+
+services:
+  train:
+    image: wwtp:mmseg
+    gpu: [L4, T4]
+    workdir: /workspace
+    env:
+      LD_LIBRARY_PATH: /usr/lib64-nvidia
+    volumes:
+      - type: google-drive
+        source: MyDrive/datasets/WWTP
+        target: /data
+        mode: ro
+      - type: google-drive
+        source: MyDrive/cbox/runs
+        target: /output
+        mode: rw
+    command: [python, tools/train.py, configs/full.py, --work-dir, /output/full]
+    restart: "no"
