@@ -27,12 +27,19 @@ func (s *ProfileStore) GetProfile(name string) (*Profile, error) {
 	profileDir := filepath.Join(s.baseDir, name)
 	homeDir := filepath.Join(profileDir, "home")
 
-	return &Profile{
+	p := &Profile{
 		Name:       name,
 		HomeDir:    homeDir,
 		ConfigFile: filepath.Join(profileDir, "config.json"),
 		OAuthFile:  filepath.Join(profileDir, "oauth.json"),
-	}, nil
+	}
+	// The default profile shares credentials with `colab sessions` / cbox setup.
+	// Named profiles keep an isolated home for independent Google accounts.
+	if name == "default" {
+		p.HomeDir = ""
+		p.OAuthFile = ""
+	}
+	return p, nil
 }
 
 func (s *ProfileStore) EnsureProfile(name string) (*Profile, error) {
@@ -40,8 +47,13 @@ func (s *ProfileStore) EnsureProfile(name string) (*Profile, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(p.HomeDir, 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p.ConfigFile), 0700); err != nil {
 		return nil, err
+	}
+	if p.HomeDir != "" {
+		if err := os.MkdirAll(p.HomeDir, 0700); err != nil {
+			return nil, err
+		}
 	}
 	return p, nil
 }

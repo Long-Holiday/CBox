@@ -13,6 +13,7 @@ import (
 	"cbox/internal/config"
 	"cbox/internal/daemon"
 	"cbox/internal/doctor"
+	"cbox/internal/transport"
 	pkgApi "cbox/pkg/api"
 	"github.com/spf13/cobra"
 )
@@ -522,8 +523,7 @@ func newExecCmd() *cobra.Command {
 				if info.ConfigFile != "" {
 					sshArgs = append(sshArgs, "-F", info.ConfigFile)
 				}
-				sshArgs = append(sshArgs, "-tt", info.Host, "--")
-				sshArgs = append(sshArgs, command...)
+				sshArgs = append(sshArgs, "-tt", "--", info.Host, transport.ShellCommand(command))
 
 				sshCmd := exec.Command("ssh", sshArgs...)
 				sshCmd.Stdin = os.Stdin
@@ -1203,5 +1203,3 @@ func newSetupCmd() *cobra.Command {
 	}
 	return cmd
 }
-
-

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 type CommandOptions struct {
@@ -88,6 +89,33 @@ func (c *ColabCLI) buildOptions() CommandOptions {
 	return opts
 }
 
+// Global options must precede the subcommand in Colab's Typer CLI.
+func (c *ColabCLI) buildArgs(args ...string) []string {
+	var global []string
+	if c.Profile != nil {
+		if c.Profile.ConfigFile != "" {
+			global = append(global, "--config", c.Profile.ConfigFile)
+		}
+		if c.Profile.OAuthFile != "" {
+			global = append(global, "--client-oauth-config", c.Profile.OAuthFile)
+		}
+	}
+	return append(global, args...)
+}
+
+// ProxyCommand uses the same state and authentication settings as other calls.
+func (c *ColabCLI) ProxyCommand(session, keyFile string) string {
+	args := []string{c.Binary}
+	if c.Profile != nil && c.Profile.HomeDir != "" {
+		args = append([]string{"env", "HOME=" + c.Profile.HomeDir}, args...)
+	}
+	args = append(args, c.buildArgs("ssh", "--proxy-mode", "-s", session, "--identity", keyFile)...)
+	for i, arg := range args {
+		args[i] = "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+	}
+	return strings.Join(args, " ")
+}
+
 func (c *ColabCLI) New(ctx context.Context, session, gpu string, highMem bool) (*CommandResult, error) {
 	args := []string{"new", "-s", session}
 	if gpu != "" {
@@ -97,7 +125,7 @@ func (c *ColabCLI) New(ctx context.Context, session, gpu string, highMem bool) (
 		args = append(args, "--high-mem")
 	}
 
-	return c.Runner.Run(ctx, c.Binary, args, c.buildOptions())
+	return c.Runner.Run(ctx, c.Binary, c.buildArgs(args...), c.buildOptions())
 }
 
 func (c *ColabCLI) Status(ctx context.Context, session string) (*CommandResult, error) {
@@ -105,15 +133,15 @@ func (c *ColabCLI) Status(ctx context.Context, session string) (*CommandResult, 
 	if session != "" {
 		args = append(args, "-s", session)
 	}
-	return c.Runner.Run(ctx, c.Binary, args, c.buildOptions())
+	return c.Runner.Run(ctx, c.Binary, c.buildArgs(args...), c.buildOptions())
 }
 
 func (c *ColabCLI) Sessions(ctx context.Context) (*CommandResult, error) {
 	args := []string{"sessions"}
-	return c.Runner.Run(ctx, c.Binary, args, c.buildOptions())
+	return c.Runner.Run(ctx, c.Binary, c.buildArgs(args...), c.buildOptions())
 }
 
 func (c *ColabCLI) Stop(ctx context.Context, session string) (*CommandResult, error) {
 	args := []string{"stop", "-s", session}
-	return c.Runner.Run(ctx, c.Binary, args, c.buildOptions())
+	return c.Runner.Run(ctx, c.Binary, c.buildArgs(args...), c.buildOptions())
 }

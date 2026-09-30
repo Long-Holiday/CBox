@@ -322,11 +322,14 @@ func (s *Service) StopContainer(ctx context.Context, idOrName string, timeoutSec
 		return nil, err
 	}
 
+	c.DesiredState = DesiredStopped
+	if err := s.repo.Update(ctx, c); err != nil {
+		return nil, err
+	}
 	if c.State != StateRunning && c.State != StateStarting && c.State != StatePreparing {
 		return c, nil
 	}
 
-	c.DesiredState = DesiredStopped
 	_ = Transition(c, StateStopping)
 	_ = s.repo.UpdateState(ctx, c.ID, StateStopping)
 
@@ -447,7 +450,7 @@ func (s *Service) GetStats(ctx context.Context, idOrName string) (*pkgApi.StatsR
 
 	// Read stats directly from remote worker
 	cmd := `nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || echo "N/A,0,0,0"`
-	res, err := trans.Exec(ctx, []string{"bash", "-c", cmd}, transport.ExecOptions{})
+	res, err := trans.Exec(ctx, []string{"bash", "-c", cmd}, transport.ExecOptions{Env: c.Env})
 	if err != nil {
 		return nil, err
 	}
@@ -489,6 +492,14 @@ func (s *Service) Exec(ctx context.Context, idOrName string, command []string, o
 	if opts.WorkDir == "" {
 		opts.WorkDir = c.WorkDir
 	}
+	env := make(map[string]string, len(c.Env)+len(opts.Env))
+	for key, value := range c.Env {
+		env[key] = value
+	}
+	for key, value := range opts.Env {
+		env[key] = value
+	}
+	opts.Env = env
 
 	return trans.Exec(ctx, command, opts)
 }

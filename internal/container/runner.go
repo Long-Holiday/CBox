@@ -47,7 +47,7 @@ func (r *Runner) SetupContainer(ctx context.Context, trans transport.Transport, 
 	var envLines []string
 	envLines = append(envLines, "#!/usr/bin/env bash")
 	for k, v := range c.Env {
-		envLines = append(envLines, fmt.Sprintf("export %s=%q", k, v))
+		envLines = append(envLines, fmt.Sprintf("export %s=%s", k, transport.ShellQuote(v)))
 	}
 	writeEnv := fmt.Sprintf("cat << 'EOF' > %s/env.sh\n%s\nEOF\nchmod +x %s/env.sh",
 		containerDir, strings.Join(envLines, "\n"), containerDir)
@@ -61,7 +61,7 @@ func (r *Runner) SetupContainer(ctx context.Context, trans transport.Transport, 
 	var cmdLines []string
 	cmdLines = append(cmdLines, "#!/usr/bin/env bash")
 	cmdLines = append(cmdLines, "set -e")
-	cmdLines = append(cmdLines, strings.Join(execCmd, " "))
+	cmdLines = append(cmdLines, transport.ShellCommand(execCmd))
 
 	writeCmd := fmt.Sprintf("cat << 'EOF' > %s/cmd.sh\n%s\nEOF\nchmod +x %s/cmd.sh",
 		containerDir, strings.Join(cmdLines, "\n"), containerDir)

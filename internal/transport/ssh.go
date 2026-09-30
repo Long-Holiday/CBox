@@ -43,17 +43,17 @@ func (t *SSHTransport) Exec(ctx context.Context, command []string, opts ExecOpti
 		args = append(args, "-tt")
 	}
 
-	args = append(args, t.Host, "--")
+	args = append(args, "--", t.Host)
 
 	// Construct shell command if Env or WorkDir specified
-	remoteCmd := strings.Join(command, " ")
+	remoteCmd := ShellCommand(command)
 	if opts.WorkDir != "" || len(opts.Env) > 0 {
 		var prefix []string
 		for k, v := range opts.Env {
-			prefix = append(prefix, fmt.Sprintf("export %s=%q;", k, v))
+			prefix = append(prefix, fmt.Sprintf("export %s=%s;", k, ShellQuote(v)))
 		}
 		if opts.WorkDir != "" {
-			prefix = append(prefix, fmt.Sprintf("cd %q;", opts.WorkDir))
+			prefix = append(prefix, fmt.Sprintf("cd %s &&", ShellQuote(opts.WorkDir)))
 		}
 		remoteCmd = strings.Join(prefix, " ") + " " + remoteCmd
 	}

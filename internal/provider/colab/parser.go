@@ -20,6 +20,49 @@ type StatusInfo struct {
 	Alive   bool   `json:"alive"`
 }
 
+func isStoppedState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "stopped", "terminated", "lost":
+		return true
+	}
+	return false
+}
+
+// Colab 0.7.x prints [name] endpoint | Hardware: T4 | ... | Status: IDLE.
+func parseSessionLine(line string) (SessionInfo, bool) {
+	if !strings.HasPrefix(line, "[") || !strings.Contains(line, " | Hardware:") {
+		return SessionInfo{}, false
+	}
+	end := strings.Index(line, "]")
+	if end < 0 {
+		return SessionInfo{}, false
+	}
+	info := SessionInfo{Session: line[1:end], State: "running"}
+	if info.Session == "?" {
+		fields := strings.Fields(strings.SplitN(line[end+1:], "|", 2)[0])
+		if len(fields) == 0 {
+			return SessionInfo{}, false
+		}
+		info.Session = fields[0]
+	}
+	for _, part := range strings.Split(line[end+1:], "|") {
+		kv := strings.SplitN(strings.TrimSpace(part), ":", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		value := strings.TrimSpace(kv[1])
+		switch strings.ToLower(kv[0]) {
+		case "hardware":
+			if value != "CPU" && value != "NONE" {
+				info.GPU = value
+			}
+		case "status":
+			info.State = strings.ToLower(value)
+		}
+	}
+	return info, true
+}
+
 func ParseSessions(output []byte) ([]SessionInfo, error) {
 	var sessions []SessionInfo
 	if err := json.Unmarshal(output, &sessions); err == nil {
@@ -30,19 +73,19 @@ func ParseSessions(output []byte) ([]SessionInfo, error) {
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "SESSION") {
+		if info, ok := parseSessionLine(line); ok {
+			sessions = append(sessions, info)
+			continue
+		}
+		if line == "" || strings.HasPrefix(line, "[") || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "SESSION") {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) >= 1 {
+		if len(fields) >= 3 {
 			s := SessionInfo{
 				Session: fields[0],
-			}
-			if len(fields) >= 2 {
-				s.GPU = fields[1]
-			}
-			if len(fields) >= 3 {
-				s.State = fields[2]
+				GPU:     fields[1],
+				State:   strings.ToLower(fields[2]),
 			}
 			sessions = append(sessions, s)
 		}
@@ -62,8 +105,7 @@ func ParseStatus(output []byte) (*StatusInfo, error) {
 	}
 
 	if strings.Contains(strings.ToLower(outStr), "not found") ||
-		strings.Contains(strings.ToLower(outStr), "no active session") ||
-		strings.Contains(strings.ToLower(outStr), "stopped") {
+		strings.Contains(strings.ToLower(outStr), "no active session") {
 		info.Alive = false
 		info.State = "stopped"
 		return info, nil
@@ -71,6 +113,13 @@ func ParseStatus(output []byte) (*StatusInfo, error) {
 
 	lines := strings.Split(outStr, "\n")
 	for _, l := range lines {
+		if session, ok := parseSessionLine(strings.TrimSpace(l)); ok {
+			info.Session = session.Session
+			info.GPU = session.GPU
+			info.State = session.State
+			info.Alive = !isStoppedState(session.State)
+			return info, nil
+		}
 		parts := strings.SplitN(l, ":", 2)
 		if len(parts) == 2 {
 			k := strings.ToLower(strings.TrimSpace(parts[0]))
@@ -81,10 +130,11 @@ func ParseStatus(output []byte) (*StatusInfo, error) {
 			case "gpu":
 				info.GPU = v
 			case "state", "status":
-				info.State = v
+				info.State = strings.ToLower(v)
 			}
 		}
 	}
+	info.Alive = !isStoppedState(info.State)
 
 	return info, nil
 }
@@ -97,6 +147,8 @@ func ParseCLIError(binary string, res *CommandResult) error {
 	out := strings.ToLower(string(res.Stdout) + " " + string(res.Stderr))
 
 	if strings.Contains(out, "gpu not available") ||
+		strings.Contains(out, "allocation refused") ||
+		strings.Contains(out, "backend rejected accelerator") ||
 		strings.Contains(out, "quota exceeded") ||
 		strings.Contains(out, "cannot allocate") ||
 		strings.Contains(out, "out of memory") {
@@ -105,7 +157,8 @@ func ParseCLIError(binary string, res *CommandResult) error {
 		}
 	}
 
-	if strings.Contains(out, "auth") ||
+	if strings.Contains(out, "authentication") ||
+		strings.Contains(out, "invalid credentials") ||
 		strings.Contains(out, "login") ||
 		strings.Contains(out, "permission denied") ||
 		strings.Contains(out, "unauthorized") {

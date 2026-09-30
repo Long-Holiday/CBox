@@ -112,10 +112,7 @@ func (p *ColabProvider) CreateRuntime(ctx context.Context, req runtime.RuntimeRe
 	// Generate SSH config file
 	host := session
 	sshConfigFile := filepath.Join(p.sshDir, session+".conf")
-	proxyCmd := fmt.Sprintf("%s ssh --proxy-mode -s %s -i %s", p.binary, session, keyFile)
-	if profile.ConfigFile != "" {
-		proxyCmd = fmt.Sprintf("%s --config %s ssh --proxy-mode -s %s -i %s", p.binary, profile.ConfigFile, session, keyFile)
-	}
+	proxyCmd := cli.ProxyCommand(session, keyFile)
 
 	controlDir := filepath.Join(filepath.Dir(p.sshDir), "run", "ssh")
 	_ = os.MkdirAll(controlDir, 0700)
@@ -173,7 +170,7 @@ func (p *ColabProvider) GetRuntime(ctx context.Context, rt *runtime.Runtime) (*r
 	}
 
 	state := runtime.StateReady
-	if !info.Alive || info.State == "stopped" {
+	if !info.Alive || isStoppedState(info.State) {
 		state = runtime.StateStopped
 	}
 
@@ -238,7 +235,7 @@ func (p *ColabProvider) ListRuntimes(ctx context.Context) ([]runtime.RuntimeStat
 	var list []runtime.RuntimeStatus
 	for _, s := range sessions {
 		st := runtime.StateReady
-		if s.State == "stopped" {
+		if isStoppedState(s.State) {
 			st = runtime.StateStopped
 		}
 		list = append(list, runtime.RuntimeStatus{

@@ -2,12 +2,12 @@ package doctor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"cbox/internal/daemon"
 )
@@ -87,7 +87,7 @@ func CheckEnvironment(opts daemon.Options) *Report {
 	colabPath, colabErr := findExecutable("colab")
 	if colabErr == nil {
 		colabItem.Installed = true
-		out, _ := exec.Command(colabPath, "--version").Output()
+		out, _ := exec.Command(colabPath, "version").Output()
 		colabItem.Version = strings.TrimSpace(string(out))
 		if colabItem.Version == "" {
 			colabItem.Version = colabPath
@@ -105,24 +105,13 @@ func CheckEnvironment(opts daemon.Options) *Report {
 		Description: "Google OAuth credentials for Colab API access",
 	}
 	if colabItem.Installed {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, colabPath, "auth", "print-token")
-		if err := cmd.Run(); err == nil {
+		home, _ := os.UserHomeDir()
+		if colabCredentialsPresent(home) {
 			authItem.Installed = true
-			authItem.Version = "Authenticated"
+			authItem.Version = "Credentials present"
 		} else {
-			// Also check if credentials file exists in standard paths
-			home, _ := os.UserHomeDir()
-			credPath := filepath.Join(home, ".colab", "credentials")
-			if _, statErr := os.Stat(credPath); statErr == nil {
-				authItem.Installed = true
-				authItem.Version = "Credentials present"
-			} else {
-				authItem.Installed = false
-				authItem.FixHint = "Run 'colab auth login' or 'cbox setup' to authenticate"
-				report.AllGood = false
-			}
+			authItem.FixHint = "Run 'colab sessions' or 'cbox setup' to authenticate"
+			report.AllGood = false
 		}
 	} else {
 		authItem.Installed = false
@@ -182,19 +171,36 @@ func SetupDependencies(ctx context.Context) error {
 		colabPath = filepath.Join(home, ".local", "bin", "colab")
 	}
 
-	authCmd := exec.CommandContext(ctx, colabPath, "auth", "login")
+	authCmd := exec.CommandContext(ctx, colabPath, "sessions")
 	authCmd.Stdin = os.Stdin
 	authCmd.Stdout = os.Stdout
 	authCmd.Stderr = os.Stderr
 
 	if err := authCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: auth login returned: %v\nYou can authenticate manually later with: colab auth login\n", err)
-	} else {
-		fmt.Println("--> Colab authentication completed!")
+		return fmt.Errorf("Colab authentication failed (retry with 'colab sessions'): %w", err)
 	}
+	home, _ := os.UserHomeDir()
+	if !colabCredentialsPresent(home) {
+		return fmt.Errorf("Colab credentials were not saved; run 'colab sessions' to authenticate")
+	}
+	fmt.Println("--> Colab authentication completed!")
 
 	fmt.Println("\n==> Setup completed! You can now use 'cbox' to run containers on GPU.")
 	return nil
+}
+
+// Colab performs OAuth when an API command runs and caches the token here.
+// Check the cache without prompting for interactive login during doctor.
+func colabCredentialsPresent(home string) bool {
+	data, err := os.ReadFile(filepath.Join(home, ".config", "colab-cli", "token.json"))
+	if err != nil {
+		return false
+	}
+	var token struct {
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	return json.Unmarshal(data, &token) == nil && (token.Token != "" || token.RefreshToken != "")
 }
 
 func findExecutable(name string) (string, error) {

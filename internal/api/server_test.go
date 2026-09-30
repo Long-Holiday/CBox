@@ -101,6 +101,31 @@ func TestFullE2ELifecycle(t *testing.T) {
 		t.Fatalf("ping failed: %v", err)
 	}
 
+	// Stopping a failed start must cancel the reconciler's desired-running state.
+	failed, err := cli.CreateContainer(ctx, pkgApi.ContainerCreateRequest{Name: "failed-start", Image: "test:latest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := containerRepo.Get(ctx, failed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.State = container.StateFailed
+	stored.DesiredState = container.DesiredRunning
+	if err := containerRepo.Update(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.StopContainer(ctx, failed.ID, 5); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = containerRepo.Get(ctx, failed.ID)
+	if err != nil || stored.DesiredState != container.DesiredStopped {
+		t.Fatalf("failed start still requests recovery: %+v, %v", stored, err)
+	}
+	if err := cli.RemoveContainer(ctx, failed.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
 	ver, err := cli.Version(ctx)
 	if err != nil || ver.Version != "0.1.0" {
 		t.Fatalf("version failed: %v, %+v", err, ver)
@@ -126,6 +151,7 @@ func TestFullE2ELifecycle(t *testing.T) {
 		Image:         "test:latest",
 		GPUPreference: []string{"T4"},
 		Command:       []string{"echo", "hello cbox"},
+		Env:           map[string]string{"CBOX_TEST_VALUE": "literal $HOME 'quoted'"},
 	}
 
 	c, err := cli.CreateContainer(ctx, req)
@@ -158,6 +184,10 @@ func TestFullE2ELifecycle(t *testing.T) {
 	}
 	if execRes.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", execRes.ExitCode)
+	}
+	envRes, err := cli.Exec(ctx, c.ID, []string{"printenv", "CBOX_TEST_VALUE"}, false)
+	if err != nil || envRes.ExitCode != 0 || envRes.Stdout != "literal $HOME 'quoted'\n" {
+		t.Fatalf("exec did not inherit container environment: %+v, %v", envRes, err)
 	}
 
 	// Stop container
