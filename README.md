@@ -1,4 +1,4 @@
-# CBox: Docker-like Ephemeral GPU Runtime Engine (Go)
+# CBox: Docker-like Ephemeral GPU Runtime Engine
 
 [English](README.md) | [简体中文](README_zh.md)
 
@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Tested Colab CLI](https://img.shields.io/badge/Colab%20CLI-v0.7.2%20tested-orange?style=flat&logo=googlecolab)](https://colab.research.google.com/)
 
-**CBox** is a high-performance, lightweight ephemeral runtime engine written in Go. It empowers developers and researchers to manage cloud GPU runtimes and remote processes through familiar **Docker-style commands**, **blueprint images**, **synchronized volumes**, **detached background execution**, and **multi-service compose orchestration**.
+**CBox** is a high-performance, lightweight ephemeral runtime engine. It empowers developers and researchers to manage cloud GPU runtimes and remote processes through familiar **Docker-style commands**, **blueprint images**, **synchronized volumes**, **detached background execution**, and **multi-service compose orchestration**.
 
 Google Colab is the currently supported primary cloud runtime provider, shielding users from raw SSH configurations, OAuth token dances, and ephemeral session lifecycles.
 
