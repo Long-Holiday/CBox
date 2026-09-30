@@ -481,15 +481,6 @@ cbox compose down
 
 ---
 
-## 未来路线图 (Roadmap)
-
-- [ ] **多云厂商支持**：扩展更多即用即弃计算资源（RunPod、GCP Compute Engine、自建 SSH 服务器、本地 GPU 工作站）。
-- [ ] **细粒度动态监控**：在 `cbox stats` 中提供类似 `nvidia-smi dmon` 的实时 GPU 显存与核心占用率曲线。
-- [ ] **分布式算力集群调度**：支持跨多个即用即弃实例的 PyTorch DDP / DeepSpeed 多机多卡训练编排。
-- [ ] **快照与断点秒级恢复**：引入云端持久化快照，实现实例被云平台抢占后的全自动断点热迁移。
-
----
-
 ## 开源协议
 
 本项目采用 [MIT 许可证](LICENSE) 开源。
