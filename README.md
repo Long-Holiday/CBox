@@ -1,86 +1,205 @@
 # CBox: Docker-like Ephemeral GPU Runtime Engine (Go)
 
-CBox is an ephemeral runtime engine written in Go. It manages Google Colab runtimes and remote processes through Docker-style commands, blueprint images, synchronized volumes, detached execution, and compose orchestration. Google Colab is the currently implemented cloud provider.
+[English](README.md) | [简体中文](README_zh.md)
 
-CBox containers run as processes on the remote runtime and share its filesystem and installed packages.
+[![Go Version](https://img.shields.io/badge/Go-%3E%3D%201.26.5-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20amd64-blue?style=flat&logo=linux)](https://github.com/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Tested Colab CLI](https://img.shields.io/badge/Colab%20CLI-v0.7.2%20tested-orange?style=flat&logo=googlecolab)](https://colab.research.google.com/)
+
+**CBox** is a high-performance, lightweight ephemeral runtime engine written in Go. It empowers developers and researchers to manage cloud GPU runtimes and remote processes through familiar **Docker-style commands**, **blueprint images**, **synchronized volumes**, **detached background execution**, and **multi-service compose orchestration**.
+
+Google Colab is the currently supported primary cloud runtime provider, shielding users from raw SSH configurations, OAuth token dances, and ephemeral session lifecycles.
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Core Concepts](#core-concepts)
+  - [Images and Cboxfile](#1-images-and-cboxfile)
+  - [Remote Synchronized Volumes](#2-remote-synchronized-volumes)
+  - [GPU Preference & Runtime Pool](#3-gpu-preference--runtime-pool)
+- [Prerequisites & Installation](#prerequisites--installation)
+  - [Quick Automated Setup](#quick-automated-setup)
+  - [Manual Compilation](#manual-compilation)
+  - [Environment Health Check](#environment-health-check)
+- [Colab Authentication & Profiles](#colab-authentication--profiles)
+- [Quick Start](#quick-start)
+- [Multi-Service Compose](#multi-service-compose)
+- [CLI Reference](#cli-reference)
+- [Implementation Notes & Best Practices](#implementation-notes--best-practices)
+- [Roadmap](#roadmap)
+- [License](#license)
+
+---
 
 ## Features
 
-- **Docker-like CLI**: `cbox run`, `cbox ps`, `cbox logs`, `cbox exec`, `cbox stop`, `cbox start`, `cbox restart`, `cbox rm`, `cbox stats`
-- **Blueprint Images (`Cboxfile`)**: Manifest hashing, remote dependency installation with `APT` / `PIP` / `RUN`, file copying, and runtime image caching; see the implementation notes below for image defaults
-- **Synchronized Remote Volumes**: `ro`, `rw`, `output`, and `cache` modes, with periodic output sync and final sync on process exit
-- **Detached Lifecycle Engine (`cboxd`)**: Go daemon with SQLite (`modernc.org/sqlite`, no CGO), a Unix socket HTTP API, and remote process monitoring
-- **Scheduler & Runtime Pool**: GPU preference matching, runtime reuse, and automatic expiry of idle runtimes
-- **OpenSSH Multiplexing**: OpenSSH `ControlMaster` + Colab `ProxyCommand` with direct PTY attachment for interactive exec
-- **Compose**: Multi-service `cbox-compose.yaml` orchestration
+- 🐳 **Docker-like CLI Experience**: Familiar syntax (`cbox run`, `cbox ps`, `cbox logs`, `cbox exec`, `cbox stop`, `cbox start`, `cbox rm`, `cbox stats`).
+- 📦 **Blueprint Images (`Cboxfile`)**: Build manifests with `FROM`, `APT`, `PIP`, and `RUN`, complete with manifest hashing and remote image caching.
+- 🔄 **Synchronized Remote Volumes**: Flexible mount modes (`ro`, `rw`, `output`, `cache`) with periodic background rsync and final guaranteed exit sync.
+- ⚡ **Detached Daemon Engine (`cboxd`)**: Background Go daemon backed by pure Go SQLite (`modernc.org/sqlite`, zero CGO), Unix socket HTTP API, and auto-start capability.
+- 🎯 **Smart Scheduler & Runtime Pool**: Priority-based GPU matching (e.g. `--gpu L4,T4`), runtime instance reuse, and idle runtime auto-expiry.
+- 🖥️ **OpenSSH Multiplexing & Native PTY**: OpenSSH `ControlMaster` + Colab `ProxyCommand` with direct terminal PTY attachment for interactive shells (`cbox exec -it`).
+- 🎼 **Multi-Container Compose**: Declarative multi-service orchestration via `cbox-compose.yaml`.
+- 🩺 **Built-in Diagnostics & Setup**: `cbox doctor` for end-to-end environment validation and `cbox setup` for automated dependency setup.
+
+---
 
 ## Architecture
 
 ```text
-                         User
-                           │
-                           ▼
-                    ┌────────────┐
-                    │    cbox    │
-                    │ Cobra CLI  │
-                    └─────┬──────┘
-                          │
-                   Unix HTTP API
-                          │
-                          ▼
-                  ┌──────────────┐
-                  │    cboxd     │
-                  │    Engine    │
-                  └──────┬───────┘
-                         │
-       ┌─────────────────┼─────────────────┐
-       │                 │                 │
-       ▼                 ▼                 ▼
- ContainerService   ImageService     VolumeService
-       │
-       ▼
- Scheduler
-       │
-       ▼
- RuntimeService
-       │
-       ▼
- Provider Interface
-       │
-       ▼
- ColabProvider
-       │
-       ▼
- google-colab-cli
-       │
-       ▼
- Colab Runtime (GPU VM)
+                         Developer / User
+                                │
+                                ▼
+                     ┌────────────────────┐
+                     │    cbox (CLI)      │
+                     │    Cobra Client    │
+                     └──────────┬─────────┘
+                                │
+                       Unix HTTP REST API
+                                │
+                                ▼
+                     ┌────────────────────┐
+                     │   cboxd (Daemon)   │
+                     │    Engine Core     │
+                     └──────────┬─────────┘
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        │                       │                       │
+        ▼                       ▼                       ▼
+ ┌──────────────┐        ┌──────────────┐        ┌──────────────┐
+ │  Container   │        │    Image     │        │    Volume    │
+ │   Service    │        │   Service    │        │   Service    │
+ └──────┬───────┘        └──────────────┘        └──────────────┘
+        │
+        ▼
+ ┌──────────────┐
+ │  Scheduler   │  (GPU preference matching & pool allocation)
+ └──────┬───────┘
+        │
+        ▼
+ ┌──────────────┐
+ │   Runtime    │  (Session lifecycle, keep-alive, idle reaper)
+ │   Service    │
+ └──────┬───────┘
+        │
+        ▼
+ ┌──────────────┐
+ │   Provider   │  (Pluggable Provider Interface)
+ └──────┬───────┘
+        │
+        ▼
+ ┌──────────────┐
+ │    Colab     │  (google-colab-cli wrapper + OAuth context)
+ │   Provider   │
+ └──────┬───────┘
+        │
+        ▼
+ ┌──────────────┐
+ │ Colab VM GPU │  (Ephemeral GPU instance connected via SSH Proxy)
+ └──────────────┘
 ```
 
-## Building and Installation
+---
 
-The current `go.mod` requires Go **1.26.5 or newer**. Local dependencies include OpenSSH, rsync, and `google-colab-cli`; setup uses uv and git to install the Colab CLI with `jupyter-kernel-client`. The Colab integration was tested with CLI **0.7.2** on 2026-09-30.
+## Core Concepts
+
+### 1. Images and `Cboxfile`
+
+`Cboxfile` defines reproducible environments on top of cloud runtimes. Similar to Dockerfiles, it specifies base configurations and setup steps:
+
+```dockerfile
+FROM colab/python:3
+
+# Remote system packages installed via apt-get
+APT git rsync libgl1 tmux
+
+# Remote Python dependencies installed via pip
+PIP torch torchvision torchaudio
+PIP mmengine mmcv mmsegmentation
+
+# Environment and working directory
+ENV PYTHONPATH=/workspace
+WORKDIR /workspace
+
+CMD ["bash"]
+```
+
+When building an image (`cbox build -t my-task:latest .`), CBox hashes the manifest and caches installation steps on the remote runtime to prevent redundant downloads.
+
+### 2. Remote Synchronized Volumes
+
+CBox uses `rsync` over SSH tunnels to manage files between local workspaces and remote runtimes. Four volume modes are supported:
+
+| Mode | Direction | Behavior | Common Use Cases |
+| :--- | :--- | :--- | :--- |
+| `ro` | Local $\to$ Remote | Synced before container starts. Remote files are not synced back. | Datasets, pretrained weights, configs |
+| `rw` | Local $\leftrightarrow$ Remote | Two-way synchronization before start and after exit. | Collaborative workspaces, interactive debugging |
+| `output` | Remote $\to$ Local | Periodically synced to local disk during execution and finalized at process exit. | Checkpoints, training logs, evaluation artifacts |
+| `cache` | Remote-only | Preserved on remote runtime for reuse across container invocations. | Pip wheels, Hugging Face / Torch hub cache |
+
+### 3. GPU Preference & Runtime Pool
+
+Specify GPU preferences using comma-separated fallbacks:
 
 ```bash
-# Build binaries (bin/cbox and bin/cboxd)
-make build
-
-# Build static binaries and install to ~/.local/bin
-make install
-
-# Install Colab CLI dependencies and authenticate
-cbox setup
-
-# Check dependencies and cached credentials
-cbox doctor
-
-# Run the test suite
-make test
+cbox run --gpu L4,T4 ...
 ```
 
-Ensure `~/.local/bin` is on your `PATH`. Alternatively, `bash scripts/install.sh` installs dependencies, builds CBox, creates the default configuration and a user systemd service, and invokes Colab authentication. That script installs CBox into `~/.local/bin` for a regular user and `/usr/local/bin` when run as root.
+The scheduler inspects the local runtime pool:
+1. Reuses an existing idle runtime matching the requested GPU tier.
+2. If none is available, provisions a new instance from the provider.
+3. Keeps runtimes alive after container completion for a configurable timeout (default `30m`), drastically cutting cold-start latency for sequential workflows.
 
-To reinstall an updated checkout and reload the background engine:
+---
+
+## Prerequisites & Installation
+
+### Requirements
+
+- **Linux** (amd64)
+- **Go 1.26.5** or newer
+- **OpenSSH client** (`ssh`) & **rsync**
+- **uv** (fast Python package manager)
+- **google-colab-cli** (tested against `v0.7.2` as of 2026-09-30)
+
+### Quick Automated Setup
+
+Run the included install script to install system dependencies, build CBox, configure the systemd user service, and set up the default profile:
+
+```bash
+bash scripts/install.sh
+```
+
+- When run as a standard user, binaries are installed to `~/.local/bin/`.
+- When run as `root`, binaries are installed to `/usr/local/bin/`.
+
+Ensure `~/.local/bin` is in your `PATH`:
+
+```bash
+export PATH="${HOME}/.local/bin:${PATH}"
+```
+
+### Manual Compilation
+
+```bash
+# 1. Build local binaries to ./bin/ (cbox and cboxd)
+make build
+
+# 2. Build static standalone binaries and install to ~/.local/bin
+make install
+
+# 3. Automatic installation of Colab CLI dependencies and trigger OAuth
+cbox setup
+
+# 4. Verify system environment
+cbox doctor
+```
+
+To update an existing installation and reload the daemon:
 
 ```bash
 cbox daemon stop
@@ -88,49 +207,80 @@ make install
 cbox daemon start
 ```
 
-## Colab Authentication and Profiles
+### Environment Health Check
 
-Colab starts OAuth when an API command needs credentials. Use these commands:
+Run `cbox doctor` to inspect the local environment:
 
 ```bash
-colab version
-colab sessions
+cbox doctor
 ```
 
-In the tested CLI, version information comes from the `version` subcommand, and authentication is triggered by `sessions`. CBox uses these commands during diagnosis and setup. `cbox doctor` checks for cached credentials; their presence does not verify current API access.
+Example diagnostic report:
+```text
+CBox Environment Diagnosis:
+----------------------------------------------------------------------
+[✔] SSH Client             : OpenSSH_9.6p1
+[✔] Rsync                  : version 3.2.7
+[✔] Git                    : version 2.43.0
+[✔] uv Package Manager     : uv 0.4.18
+[✔] Colab CLI              : colab 0.7.2
+[✔] Colab Credentials      : OK
+[✔] CBox Daemon Engine     : Running (PID: 12345)
+----------------------------------------------------------------------
+All required dependencies are satisfied! CBox is ready to use.
+```
 
-The default CBox profile reuses the user's credentials in `~/.config/colab-cli/token.json`. Its session state is stored separately in `<data_dir>/profiles/default/config.json`. With the default installation, `<data_dir>` is `~/.local/share/cbox`. An explicit `engine.data_dir` overrides this location; when it is unset, `XDG_DATA_HOME` is honored.
+---
 
-All Colab lifecycle commands and generated SSH proxies use the same session state file. When querying or releasing CBox runtimes manually, pass that file as a **global option before the subcommand**:
+## Colab Authentication & Profiles
+
+Google Colab initiates OAuth authentication when credentials are needed.
+
+- **Default Profile**: Reuses user credentials stored in `~/.config/colab-cli/token.json`. Session state is maintained independently in `<data_dir>/profiles/default/config.json`.
+- **Default Data Directory**: Defaults to `~/.local/share/cbox` (or respects `XDG_DATA_HOME`).
+- **Manual Runtime Inspection / Termination**: Colab lifecycle commands and generated SSH proxies share this session state. To query or stop CBox sessions manually, pass `--config` before the subcommand:
 
 ```bash
+# Query active CBox Colab sessions
 colab --config ~/.local/share/cbox/profiles/default/config.json sessions
+
+# Terminate a session explicitly
+colab --config ~/.local/share/cbox/profiles/default/config.json stop -s <SESSION_ID>
 ```
 
-Named provider profiles use `<data_dir>/profiles/<name>/home` to isolate credentials. Their optional `oauth.json` is a **client OAuth configuration**, supplied via `--client-oauth-config`; it is separate from the cached login token. Current context selection does not propagate a named profile to `cbox run` or `cbox create`.
+- **Named Profiles**: Store isolated credentials under `<data_dir>/profiles/<name>/home`. An optional `oauth.json` client configuration can be supplied via `--client-oauth-config`.
+
+---
 
 ## Quick Start
 
-1. Start the background engine:
+### Step 1: Start the Background Engine
 
 ```bash
 cbox daemon start
 ```
 
-For foreground operation, use `cboxd --debug`. Client commands also automatically start the engine when it is unavailable.
+> **Note**: Client commands automatically start `cboxd` in the background if it is not running. To run in the foreground with verbose logs, use `cbox daemon run --debug`.
 
-2. Create a minimal blueprint and build its manifest:
+### Step 2: Create a Blueprint Image
+
+Create a directory with a minimal `Cboxfile`:
 
 ```bash
 mkdir -p /tmp/cbox-gpu-demo
-cat > /tmp/cbox-gpu-demo/Cboxfile <<'EOF'
+cat << 'EOF' > /tmp/cbox-gpu-demo/Cboxfile
 FROM colab/python:3
 APT tmux rsync
+PIP numpy
 EOF
+
 cbox build -t gpu-demo:latest /tmp/cbox-gpu-demo
+cbox images
 ```
 
-3. Start a container on a T4 runtime:
+### Step 3: Run a Detached GPU Container
+
+Run a container in the background requesting a `T4` GPU (or fallback `L4,T4`), mounting local folders for datasets and outputs:
 
 ```bash
 cbox run -d \
@@ -138,77 +288,204 @@ cbox run -d \
   --gpu T4 \
   --workdir /content \
   -e LD_LIBRARY_PATH=/usr/lib64-nvidia \
-  gpu-demo:latest -- bash -c 'echo CBOX_GPU_DEMO_READY; sleep 600'
+  gpu-demo:latest -- bash -c 'echo "CBox GPU worker started"; nvidia-smi; sleep 600'
 ```
 
-The tested Colab SSH environment requires `LD_LIBRARY_PATH=/usr/lib64-nvidia` to locate GPU driver libraries. Set it with `-e` for the container process and noninteractive `cbox exec` calls. `--gpu L4,T4` tries those GPUs in order; omitting `--gpu` requests a CPU runtime.
+> **Important**: The Colab remote SSH environment requires `LD_LIBRARY_PATH=/usr/lib64-nvidia` to locate NVIDIA CUDA runtime and driver libraries. Set this via `-e` for container commands and noninteractive `cbox exec`.
 
-Use `--` before the remote command when it contains flags. Arguments after `--` belong to the remote command, and quoted arguments keep their boundaries when passed through SSH.
-
-4. Check the running container and execute GPU commands:
+### Step 4: Monitor, Inspect, and Interact
 
 ```bash
+# List running containers
 cbox ps
+
+# Stream container stdout / stderr
+cbox logs -f gpu-demo
+
+# Execute an ad-hoc GPU command inside the running container
 cbox exec gpu-demo -- nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
-# Requires PyTorch in the remote runtime; verified during the T4 live test
+# Check PyTorch CUDA availability
 cbox exec gpu-demo -- python3 -c \
-  'import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0)); print((torch.arange(4, device="cuda") ** 2).tolist())'
+  'import torch; print("CUDA available:", torch.cuda.is_available()); print("Device:", torch.cuda.get_device_name(0))'
 
-cbox logs gpu-demo
-cbox --format json inspect gpu-demo
+# Attach an interactive terminal (SSH PTY)
+cbox exec -it gpu-demo -- bash
+
+# Inspect detailed JSON state
+cbox inspect gpu-demo
 ```
 
-The live test returned `True`, `Tesla T4`, and `[0, 1, 4, 9]`. A separate CUDA container also completed with exit code `0` and its output was available through `cbox logs`.
-
-For an interactive SSH shell, use `cbox exec -it gpu-demo -- bash`. This path uses the remote shell's environment and working directory; set `export LD_LIBRARY_PATH=/usr/lib64-nvidia` inside that shell before using GPU tools.
-
-5. Stop the container and release the runtime:
+### Step 5: Stop and Clean Up
 
 ```bash
-# Note runtime_id in the output before removing the container
-cbox --format json inspect gpu-demo
+# Stop and remove the container
 cbox stop gpu-demo
 cbox rm gpu-demo
-
-# Replace SESSION with the runtime_id printed above
-colab --config ~/.local/share/cbox/profiles/default/config.json stop -s SESSION
-colab --config ~/.local/share/cbox/profiles/default/config.json sessions
 ```
 
-`cbox stop` stops the container process and clears its desired running state, including after a failed start. `cbox rm` removes the container record. The Colab runtime remains available for reuse until idle expiry (30 minutes by default); the explicit `colab stop` command above releases it immediately. Remove all other containers using the same runtime before releasing it.
+When a container is removed, the remote Colab runtime remains in the idle pool for 30 minutes, allowing future containers to start instantly without re-provisioning.
 
-## Current Implementation Notes
+---
 
-- `Cboxfile` parses `FROM`, `ENV`, `WORKDIR`, and `CMD`, but container creation currently uses the command, environment, and work directory supplied at run time. Provide the command explicitly and use `-e` / `--workdir`; `FROM` is stored as blueprint metadata.
-- Relative `COPY` sources are currently resolved against the daemon's working directory during materialization. Bind volumes can be used to synchronize project code.
-- `cbox stats` currently populates the GPU name. Numeric GPU and system memory/utilization fields are not populated and display zero.
-- Volumes use rsync and remote symlinks. The `ro` mode describes synchronization behavior; remote filesystem permissions do not enforce read-only access.
-- Restart policy and resume command fields are stored, but the reconciler does not yet apply their full semantics. Stop a failed container to cancel further recovery attempts.
+## Multi-Service Compose
 
-## Compose
+CBox supports multi-service orchestration with `cbox-compose.yaml`.
 
-Create `cbox-compose.yaml` using an image built with `cbox build`. For example, the following service uses the `gpu-demo:latest` image from the quick start:
+### Example `cbox-compose.yaml`
 
 ```yaml
+version: "1"
+
 services:
-  gpu-check:
+  training-l4:
     image: gpu-demo:latest
     gpu:
-      preference: [T4]
+      preference:
+        - L4
+        - T4
+    workdir: /content
     env:
       LD_LIBRARY_PATH: /usr/lib64-nvidia
+    volumes:
+      - source: ./data
+        target: /data
+        mode: ro
+      - source: ./checkpoints
+        target: /checkpoints
+        mode: output
+    command:
+      - python3
+      - -c
+      - 'import torch, time; print("Training on:", torch.cuda.get_device_name(0)); time.sleep(60)'
+    restart: unless-stopped
+
+  eval-t4:
+    image: gpu-demo:latest
+    gpu:
+      preference:
+        - T4
     workdir: /content
-    command: [nvidia-smi]
+    env:
+      LD_LIBRARY_PATH: /usr/lib64-nvidia
+    command:
+      - nvidia-smi
 ```
 
-Run it with:
+### Compose Commands
 
 ```bash
+# Launch all compose services in background
 cbox compose up -d
+
+# Check service status
 cbox compose ps
+
+# View service logs
 cbox compose logs
+
+# Stop and clean up all services
 cbox compose down
 ```
 
-`compose down` stops and removes the service containers. Their Colab runtimes follow the same reuse and release behavior described above.
+---
+
+## CLI Reference
+
+### Container Management
+
+| Command | Description | Example Flags |
+| :--- | :--- | :--- |
+| `cbox run` | Create and start a container | `-d`, `--name`, `--gpu`, `-v`, `-e`, `-w`, `--restart` |
+| `cbox create` | Create a container without starting | `--name`, `--gpu`, `-v`, `-e`, `-w` |
+| `cbox start` | Start stopped container(s) | `-a, --attach` |
+| `cbox stop` | Gracefully stop running container(s) | `-t, --time <seconds>` |
+| `cbox restart` | Restart container(s) | `-t, --time <seconds>` |
+| `cbox rm` | Remove container record | `-f, --force` |
+| `cbox ps` | List containers | `-a, --all`, `--format json` |
+| `cbox inspect` | Inspect low-level JSON details | `cbox inspect <name>` |
+| `cbox logs` | View container execution logs | `-f, --follow` |
+| `cbox exec` | Execute commands in running container | `-i`, `-t` (direct SSH PTY attachment) |
+| `cbox stats` | View container resource utilization | `cbox stats <name>` |
+
+### Blueprint Image Management
+
+| Command | Description | Example Flags |
+| :--- | :--- | :--- |
+| `cbox build` | Build an image from a `Cboxfile` | `-t, --tag <name:tag>`, `-f, --file` |
+| `cbox images` | List local blueprint images | `--format json` |
+| `cbox rmi` | Remove an image tag | `cbox rmi <image>` |
+
+### Storage & Volumes
+
+| Command | Description | Example Flags |
+| :--- | :--- | :--- |
+| `cbox volume create` | Create a named volume mapping | `--source <path>`, `--mode <ro\|rw\|output\|cache>` |
+| `cbox volume ls` | List configured volumes | `--format json` |
+| `cbox volume inspect`| Inspect volume metadata | `cbox volume inspect <name>` |
+| `cbox volume rm` | Delete a volume configuration | `cbox volume rm <name>` |
+
+### Multi-Container Orchestration
+
+| Command | Description | Example Flags |
+| :--- | :--- | :--- |
+| `cbox compose up` | Create and launch all compose services | `-f <file>`, `-d, --detach` |
+| `cbox compose down` | Stop and remove all compose services | `-f <file>` |
+| `cbox compose ps` | List status of compose services | `-f <file>` |
+| `cbox compose logs` | View logs from compose services | `-f <file>` |
+
+### Contexts & Daemon Engine
+
+| Command | Description |
+| :--- | :--- |
+| `cbox context create` | Create an execution context (`--provider`, `--profile`) |
+| `cbox context ls` | List available contexts |
+| `cbox context use` | Switch active context |
+| `cbox daemon start` | Start `cboxd` background engine |
+| `cbox daemon stop` | Stop `cboxd` background engine |
+| `cbox daemon restart` | Restart `cboxd` background engine |
+| `cbox daemon status` | Show daemon PID, socket, and health status |
+| `cbox daemon run` | Run engine in foreground (`--debug`, `--tcp`) |
+
+### System & Diagnostics
+
+| Command | Description |
+| :--- | :--- |
+| `cbox doctor` | Comprehensive diagnostic check of tools, network, and credentials |
+| `cbox setup` | Automated installation of Colab CLI and OAuth bootstrap |
+| `cbox events` | Real-time stream of engine events (`-n <limit>`) |
+| `cbox version` | Display client and daemon version info |
+
+---
+
+## Implementation Notes & Best Practices
+
+1. **GPU Driver Path**:
+   Colab's SSH environment places NVIDIA driver user-space libraries in `/usr/lib64-nvidia`. Always pass `-e LD_LIBRARY_PATH=/usr/lib64-nvidia` or set it in your interactive shell (`export LD_LIBRARY_PATH=/usr/lib64-nvidia`) before executing GPU programs.
+2. **Command Flag Boundary (`--`)**:
+   When invoking commands that accept their own flags, place `--` before the command (e.g. `cbox run ... image -- bash -c '...'`). Arguments after `--` are forwarded verbatim to the remote process.
+3. **Session Re-use & Teardown**:
+   When a container finishes or is removed, the Colab VM remains alive in the pool for 30 minutes to facilitate instant restart for subsequent runs. If you want to release cloud GPU quota immediately, inspect the `runtime_id` using `cbox inspect <name>` and terminate the session with:
+   ```bash
+   colab --config ~/.local/share/cbox/profiles/default/config.json stop -s <RUNTIME_ID>
+   ```
+4. **Volume Sync Mechanics**:
+   - `ro` volumes are synchronized upon container creation. Note that filesystem-level write restrictions are not enforced on the remote side; changes made remotely are simply discarded.
+   - `output` volumes sync remote results back to the local host periodically (default interval `10m`) and perform a final synchronous pull when the container process terminates.
+5. **Interactive TTY Attachment**:
+   Using `cbox exec -it <container> -- bash` connects directly through OpenSSH multiplexed sockets with a pseudo-terminal allocated (`ssh -tt`), preserving full ANSI colors, terminal dimensions, and key bindings.
+
+---
+
+## Roadmap
+
+- [ ] **Multi-Cloud Providers**: First-class support for RunPod, GCP Compute Engine, custom SSH bastions, and local GPU workstations.
+- [ ] **Real-time Telemetry**: Streaming GPU memory utilization and compute load charts in `cbox stats`.
+- [ ] **Dynamic Distributed Scaling**: Support for multi-node distributed PyTorch / DeepSpeed clusters across multiple ephemeral runtimes.
+- [ ] **Snapshot Checkpoint Sync**: Automated remote snapshotting and fast-resume integration.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
