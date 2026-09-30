@@ -1,5 +1,4 @@
-# CBox：类 Docker 的即用即弃 GPU 运行时引擎 (Go)
-
+# CBox：类 Docker 的即用即弃 GPU 运行时引擎
 [English](README.md) | [简体中文](README_zh.md)
 
 [![Go Version](https://img.shields.io/badge/Go-%3E%3D%201.26.5-00ADD8?style=flat&logo=go)](https://go.dev/)
