@@ -477,15 +477,6 @@ cbox compose down
 
 ---
 
-## Roadmap
-
-- [ ] **Multi-Cloud Providers**: First-class support for RunPod, GCP Compute Engine, custom SSH bastions, and local GPU workstations.
-- [ ] **Real-time Telemetry**: Streaming GPU memory utilization and compute load charts in `cbox stats`.
-- [ ] **Dynamic Distributed Scaling**: Support for multi-node distributed PyTorch / DeepSpeed clusters across multiple ephemeral runtimes.
-- [ ] **Snapshot Checkpoint Sync**: Automated remote snapshotting and fast-resume integration.
-
----
-
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
